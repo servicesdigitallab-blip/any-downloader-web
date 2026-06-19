@@ -619,7 +619,7 @@ async function scrapeYouTubePageMetadata(url) {
 }
 
 // Helper: Fetch YouTube metadata using oEmbed (bypasses blocks/rate-limits on Vercel)
-async function getYouTubeOEmbed(url) {
+async function getYouTubeOEmbed(url, force = false) {
   const oEmbedUrl = `https://www.youtube.com/oembed?url=${encodeURIComponent(url)}&format=json`;
   
   const [oEmbedRes, pageMeta] = await Promise.all([
@@ -632,7 +632,7 @@ async function getYouTubeOEmbed(url) {
   }
   
   const durationSec = pageMeta ? pageMeta.durationSec : 0;
-  if (!durationSec || durationSec === 0) {
+  if (!force && (!durationSec || durationSec === 0)) {
     throw new Error(`oEmbed watch page scrape returned 0 or missing duration`);
   }
 
@@ -694,13 +694,14 @@ app.get('/api/info', async (req, res) => {
         
         let videoInfo = null;
         let lastErr = null;
-        const clientsToTry = ['TV', 'ANDROID', 'MWEB', 'WEB'];
+        const clientsToTry = ['ANDROID', 'TV', 'MWEB', 'WEB'];
         
         for (const clientName of clientsToTry) {
           try {
             console.log(`Trying youtubei.js client: ${clientName}`);
-            videoInfo = await yt.getInfo(videoId, { client: clientName });
-            if (videoInfo && videoInfo.streaming_data) {
+            const tempInfo = await yt.getInfo(videoId, { client: clientName });
+            if (tempInfo && tempInfo.streaming_data && tempInfo.basic_info && tempInfo.basic_info.title) {
+              videoInfo = tempInfo;
               console.log(`Successfully fetched videoInfo using client: ${clientName}`);
               break;
             }
@@ -799,7 +800,7 @@ app.get('/api/info', async (req, res) => {
           } catch (invErr) {
             console.warn(`Invidious metadata fetch failed, falling back to YouTube oEmbed:`, invErr.message);
             try {
-              const info = await getYouTubeOEmbed(url);
+              const info = await getYouTubeOEmbed(url, true);
               return res.json(info);
             } catch (oEmbedErr) {
               console.warn(`YouTube oEmbed failed, falling back to Open Graph scraping:`, oEmbedErr.message);
@@ -1048,13 +1049,14 @@ app.post('/api/download', async (req, res) => {
         
         let videoInfo = null;
         let lastErr = null;
-        const clientsToTry = ['TV', 'ANDROID', 'MWEB', 'WEB'];
+        const clientsToTry = ['ANDROID', 'TV', 'MWEB', 'WEB'];
         
         for (const clientName of clientsToTry) {
           try {
             console.log(`Trying youtubei.js download client: ${clientName}`);
-            videoInfo = await yt.getInfo(videoId, { client: clientName });
-            if (videoInfo && videoInfo.streaming_data) {
+            const tempInfo = await yt.getInfo(videoId, { client: clientName });
+            if (tempInfo && tempInfo.streaming_data && tempInfo.basic_info && tempInfo.basic_info.title) {
+              videoInfo = tempInfo;
               console.log(`Successfully fetched videoInfo for download using client: ${clientName}`);
               break;
             }
