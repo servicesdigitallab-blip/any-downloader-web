@@ -248,6 +248,191 @@ function App() {
     setDownloadSize('');
     setDownloadError(null);
 
+    // Map quality requests for Cobalt
+    let videoQuality = '1080';
+    let downloadMode = 'auto';
+
+    if (selectedQuality === 'audio') {
+      downloadMode = 'audio';
+    } else {
+      const cleanQuality = selectedQuality.replace('p', '');
+      if (cleanQuality === '4k' || cleanQuality === '2160') {
+        videoQuality = '2160';
+      } else if (cleanQuality === '2k' || cleanQuality === '1440') {
+        videoQuality = '1440';
+      } else if (['1080', '720', '480', '360', '240', '144'].includes(cleanQuality)) {
+        videoQuality = cleanQuality;
+      } else {
+        videoQuality = '1080';
+      }
+    }
+
+    let instances = [];
+    try {
+      setDownloadSpeed('Locating download servers...');
+      const instRes = await fetch(`${API_BASE}/api/cobalt-instances`);
+      if (instRes.ok) {
+        const instData = await instRes.json();
+        instances = instData.instances || [];
+      }
+    } catch (e) {
+      console.warn('Failed to fetch dynamic Cobalt instances:', e);
+    }
+
+    if (instances.length === 0) {
+      instances = [
+        'https://api.cobalt.blackcat.sweeux.org',
+        'https://rue-cobalt.xenon.zone',
+        'https://dog.kittycat.boo',
+        'https://cobaltapi.kittycat.boo',
+        'https://fox.kittycat.boo',
+        'https://cobaltapi.cjs.nz',
+        'https://sunny.imput.net',
+        'https://kityune.imput.net',
+        'https://nachos.imput.net',
+        'https://blossom.imput.net',
+        'https://api.dl.woof.monster'
+      ];
+    }
+
+    let success = false;
+    let cobaltStreamUrl = '';
+    let cobaltFileName = '';
+
+    // Loop through at most 10 instances on the client side to find one that works!
+    const targetInstances = instances.slice(0, 10);
+
+    for (let i = 0; i < targetInstances.length; i++) {
+      const instance = targetInstances[i];
+      setDownloadSpeed(`Connecting to download server ${i + 1}/${targetInstances.length}...`);
+      try {
+        const response = await fetch(instance, {
+          method: 'POST',
+          headers: {
+            'Accept': 'application/json',
+            'Content-Type': 'application/json'
+          },
+          body: JSON.stringify({
+            url: videoInfo.originalUrl,
+            videoQuality: videoQuality,
+            downloadMode: downloadMode
+          }),
+          signal: AbortSignal.timeout(3500) // Fast 3.5s check per server
+        });
+
+        if (response.ok) {
+          const data = await response.json();
+          if (data && (data.status === 'redirect' || data.status === 'tunnel' || data.url)) {
+            cobaltStreamUrl = data.url;
+            cobaltFileName = data.filename || `download.${selectedQuality === 'audio' ? 'mp3' : 'mp4'}`;
+            success = true;
+            break;
+          } else if (data && data.status === 'picker' && data.picker && data.picker.length > 0) {
+            const item = data.picker.find(p => p.type === 'video') || data.picker[0];
+            cobaltStreamUrl = item.url;
+            cobaltFileName = data.filename || `download.${selectedQuality === 'audio' ? 'mp3' : 'mp4'}`;
+            success = true;
+            break;
+          }
+        }
+      } catch (err) {
+        console.warn(`Client-side Cobalt check failed for ${instance}:`, err.message);
+      }
+    }
+
+    if (success) {
+      // Start streaming with progress tracking
+      setDownloadStatus('downloading');
+      setDownloadProgress(0);
+      setDownloadSpeed('Initializing stream...');
+      
+      try {
+        const response = await fetch(cobaltStreamUrl);
+        if (!response.ok) {
+          throw new Error('Failed to download video stream.');
+        }
+
+        const reader = response.body.getReader();
+        const contentLength = parseInt(response.headers.get('content-length'), 10) || 0;
+        
+        if (contentLength) {
+          setDownloadSize(`${(contentLength / (1024 * 1024)).toFixed(1)} MB`);
+        } else {
+          setDownloadSize('Unknown size');
+        }
+
+        let receivedLength = 0;
+        const chunks = [];
+        const startTime = Date.now();
+
+        while (true) {
+          const { done, value } = await reader.read();
+          if (done) break;
+
+          chunks.push(value);
+          receivedLength += value.length;
+
+          if (contentLength) {
+            const progress = Math.round((receivedLength / contentLength) * 100);
+            setDownloadProgress(progress);
+            
+            const elapsedSeconds = (Date.now() - startTime) / 1000;
+            const speed = elapsedSeconds > 0 ? (receivedLength / (1024 * 1024) / elapsedSeconds).toFixed(1) : '0';
+            setDownloadSpeed(`${(receivedLength / (1024 * 1024)).toFixed(1)} MB / ${(contentLength / (1024 * 1024)).toFixed(1)} MB (${speed} MB/s)`);
+          } else {
+            setDownloadSpeed(`${(receivedLength / (1024 * 1024)).toFixed(1)} MB downloaded`);
+          }
+        }
+
+        setDownloadStatus('completed');
+        setDownloadProgress(100);
+
+        const finalBlob = new Blob(chunks, { type: 'video/mp4' });
+        const localDownloadUrl = URL.createObjectURL(finalBlob);
+
+        // Standardize file name prefix
+        const finalFileName = `[Any Download] - ${cobaltFileName.replace(/^\[.*?\]\s*-\s*/, '')}`;
+
+        const downloadLink = document.createElement('a');
+        downloadLink.href = localDownloadUrl;
+        downloadLink.setAttribute('download', finalFileName);
+        document.body.appendChild(downloadLink);
+        downloadLink.click();
+        downloadLink.remove();
+
+        const newHistoryItem = {
+          id: crypto.randomUUID(),
+          title: videoInfo.title,
+          thumbnail: videoInfo.thumbnail,
+          platform: videoInfo.platform,
+          quality: selectedQuality,
+          date: new Date().toLocaleDateString(),
+          downloadUrl: localDownloadUrl
+        };
+        saveHistory([newHistoryItem, ...history]);
+
+        setTimeout(() => URL.revokeObjectURL(localDownloadUrl), 10000);
+      } catch (streamErr) {
+        console.error('Direct stream download failed, falling back to redirect:', streamErr);
+        setDownloadStatus('completed');
+        setDownloadProgress(100);
+        
+        const finalFileName = `[Any Download] - ${cobaltFileName.replace(/^\[.*?\]\s*-\s*/, '')}`;
+        const downloadLink = document.createElement('a');
+        downloadLink.href = cobaltStreamUrl;
+        downloadLink.setAttribute('download', finalFileName);
+        downloadLink.setAttribute('target', '_blank');
+        document.body.appendChild(downloadLink);
+        downloadLink.click();
+        downloadLink.remove();
+      }
+      return;
+    }
+
+    // Server-side fallback if client-side Cobalt loop fails completely
+    console.log('Client-side Cobalt loop failed, falling back to server-side extractors...');
+    setDownloadSpeed('Retrying via server-side extractors...');
+
     try {
       const response = await fetch(`${API_BASE}/api/download`, {
         method: 'POST',
