@@ -177,6 +177,25 @@ app.post('/api/download', (req, res) => {
   const jobId = crypto.randomUUID();
   console.log(`Starting download job ${jobId} for quality ${quality}`);
 
+  // Vercel FFmpeg limitation safeguard
+  const currentFfmpegPath = path.join(BIN_DIR, process.platform === 'win32' ? 'ffmpeg.exe' : 'ffmpeg');
+  if (isVercel && !fs.existsSync(currentFfmpegPath)) {
+    const job = {
+      id: jobId,
+      status: 'error',
+      progress: 0,
+      speed: '0 KiB/s',
+      eta: 'Unknown',
+      size: 'Unknown',
+      filePath: '',
+      fileName: `[Any Downloader] - ${title.replace(/[\\/:*?"<>|]/g, '_')}.mp4`,
+      error: 'HD merging requires FFmpeg, which is not available in Vercel serverless functions. Please deploy to Railway, Render, or a VPS to download videos.',
+      clients: []
+    };
+    jobs.set(jobId, job);
+    return res.json({ jobId });
+  }
+
   // Map requested quality to yt-dlp format options
   let formatArg = 'b'; // best combined format by default
   let isAudio = false;
