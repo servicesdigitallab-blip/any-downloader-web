@@ -286,46 +286,11 @@ app.post('/api/download', (req, res) => {
   const jobId = crypto.randomUUID();
   console.log(`Starting download job ${jobId} for quality ${quality}`);
 
-  // If running on Vercel and it is a YouTube URL, we use direct streaming fallback
-  const isYouTube = url.includes('youtube.com') || url.includes('youtu.be');
-  if (isVercel && isYouTube) {
-    const fileExt = quality === 'audio' ? 'mp3' : 'mp4';
-    const job = {
-      id: jobId,
-      status: 'completed',
-      progress: 100,
-      speed: '0 KiB/s',
-      eta: '0s',
-      size: 'Unknown',
-      filePath: '', // indicates streaming
-      fileName: `[Any Downloader] - ${title.replace(/[\\/:*?"<>|]/g, '_')}.${fileExt}`,
-      error: null,
-      clients: [],
-      isStreaming: true,
-      originalUrl: url,
-      quality: quality
-    };
-    jobs.set(jobId, job);
-    return res.json({ jobId });
-  }
-
-  // Vercel FFmpeg limitation safeguard
-  const currentFfmpegPath = path.join(BIN_DIR, process.platform === 'win32' ? 'ffmpeg.exe' : 'ffmpeg');
-  if (isVercel && !fs.existsSync(currentFfmpegPath)) {
-    const job = {
-      id: jobId,
-      status: 'error',
-      progress: 0,
-      speed: '0 KiB/s',
-      eta: 'Unknown',
-      size: 'Unknown',
-      filePath: '',
-      fileName: `[Any Downloader] - ${title.replace(/[\\/:*?"<>|]/g, '_')}.mp4`,
-      error: 'HD merging requires FFmpeg, which is not available in Vercel serverless functions. Please deploy to Railway, Render, or a VPS to download videos.',
-      clients: []
-    };
-    jobs.set(jobId, job);
-    return res.json({ jobId });
+  // Vercel platform safeguards (limitations on response size and runtime dependencies)
+  if (isVercel) {
+    return res.status(403).json({ 
+      error: 'Vercel serverless functions have a strict 4.5MB response size limit and lack system dependencies like Python. Video downloading is NOT supported on Vercel. Please deploy this repository to Render.com (using the included render.yaml file) for unlimited, full-speed downloads.' 
+    });
   }
 
   // Map requested quality to yt-dlp format options
