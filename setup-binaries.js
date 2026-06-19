@@ -11,12 +11,23 @@ const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
 const BIN_DIR = path.join(__dirname, 'bin');
-const YTDLP_PATH = path.join(BIN_DIR, 'yt-dlp.exe');
-const FFMPEG_PATH = path.join(BIN_DIR, 'ffmpeg.exe');
-const FFPROBE_PATH = path.join(BIN_DIR, 'ffprobe.exe');
+const isWin = process.platform === 'win32';
 
-const YTDLP_URL = 'https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp.exe';
-const FFMPEG_ZIP_URL = 'https://github.com/yt-dlp/FFmpeg-Builds/releases/download/latest/ffmpeg-master-latest-win64-gpl.zip';
+const YTDLP_PATH = path.join(BIN_DIR, isWin ? 'yt-dlp.exe' : 'yt-dlp');
+const FFMPEG_PATH = path.join(BIN_DIR, isWin ? 'ffmpeg.exe' : 'ffmpeg');
+const FFPROBE_PATH = path.join(BIN_DIR, isWin ? 'ffprobe.exe' : 'ffprobe');
+
+const YTDLP_URL = isWin
+  ? 'https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp.exe'
+  : 'https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp';
+
+const FFMPEG_ZIP_URL = isWin
+  ? 'https://github.com/yt-dlp/FFmpeg-Builds/releases/download/latest/ffmpeg-master-latest-win64-gpl.zip'
+  : 'https://github.com/ffbinaries/ffbinaries-prebuilt/releases/download/v4.4.1/ffmpeg-4.4.1-linux-64.zip';
+
+const FFPROBE_ZIP_URL = isWin
+  ? null
+  : 'https://github.com/ffbinaries/ffbinaries-prebuilt/releases/download/v4.4.1/ffprobe-4.4.1-linux-64.zip';
 
 function downloadFile(url, dest) {
   return new Promise((resolve, reject) => {
@@ -75,64 +86,91 @@ async function setup() {
     }
 
     if (!hasYtdlp) {
-      console.log('Downloading yt-dlp.exe...');
+      console.log('Downloading yt-dlp...');
       await downloadFile(YTDLP_URL, YTDLP_PATH);
-      console.log('✔ yt-dlp.exe downloaded successfully.');
+      if (!isWin) {
+        fs.chmodSync(YTDLP_PATH, '755');
+      }
+      console.log('✔ yt-dlp downloaded successfully.');
     } else {
-      console.log('✔ yt-dlp.exe is already present.');
+      console.log('✔ yt-dlp is already present.');
     }
 
     if (!hasFfmpeg) {
-      const zipPath = path.join(BIN_DIR, 'ffmpeg.zip');
-      const tempExtractDir = path.join(BIN_DIR, 'ffmpeg-temp');
+      if (isWin) {
+        const zipPath = path.join(BIN_DIR, 'ffmpeg.zip');
+        const tempExtractDir = path.join(BIN_DIR, 'ffmpeg-temp');
 
-      console.log('Downloading ffmpeg package (zip)...');
-      await downloadFile(FFMPEG_ZIP_URL, zipPath);
-      console.log('✔ ffmpeg.zip downloaded. Extracting...');
+        console.log('Downloading ffmpeg package (zip)...');
+        await downloadFile(FFMPEG_ZIP_URL, zipPath);
+        console.log('✔ ffmpeg.zip downloaded. Extracting...');
 
-      if (fs.existsSync(tempExtractDir)) {
+        if (fs.existsSync(tempExtractDir)) {
+          fs.rmSync(tempExtractDir, { recursive: true, force: true });
+        }
+        fs.mkdirSync(tempExtractDir, { recursive: true });
+
+        // Run PowerShell Expand-Archive
+        console.log('Running Expand-Archive via PowerShell...');
+        const psCommand = `powershell -Command "Expand-Archive -Path '${zipPath}' -DestinationPath '${tempExtractDir}' -Force"`;
+        await execAsync(psCommand);
+        console.log('✔ ffmpeg.zip extracted.');
+
+        // Find the folder name inside tempExtractDir
+        const folders = fs.readdirSync(tempExtractDir);
+        const innerFolder = folders.find(f => f.startsWith('ffmpeg'));
+
+        if (!innerFolder) {
+          throw new Error('Could not find ffmpeg folder inside extracted contents.');
+        }
+
+        const extractedBinDir = path.join(tempExtractDir, innerFolder, 'bin');
+        const extractedFfmpeg = path.join(extractedBinDir, 'ffmpeg.exe');
+        const extractedFfprobe = path.join(extractedBinDir, 'ffprobe.exe');
+
+        if (fs.existsSync(extractedFfmpeg)) {
+          fs.copyFileSync(extractedFfmpeg, FFMPEG_PATH);
+          console.log('✔ ffmpeg.exe moved to bin.');
+        } else {
+          throw new Error('ffmpeg.exe not found in extracted folder.');
+        }
+
+        if (fs.existsSync(extractedFfprobe)) {
+          fs.copyFileSync(extractedFfprobe, FFPROBE_PATH);
+          console.log('✔ ffprobe.exe moved to bin.');
+        } else {
+          throw new Error('ffprobe.exe not found in extracted folder.');
+        }
+
+        // Cleanup
+        console.log('Cleaning up temporary files...');
+        fs.rmSync(zipPath, { force: true });
         fs.rmSync(tempExtractDir, { recursive: true, force: true });
-      }
-      fs.mkdirSync(tempExtractDir, { recursive: true });
-
-      // Run PowerShell Expand-Archive
-      console.log('Running Expand-Archive via PowerShell...');
-      const psCommand = `powershell -Command "Expand-Archive -Path '${zipPath}' -DestinationPath '${tempExtractDir}' -Force"`;
-      await execAsync(psCommand);
-      console.log('✔ ffmpeg.zip extracted.');
-
-      // The zip contains a folder e.g., ffmpeg-master-latest-win64-gpl
-      // Find the folder name inside tempExtractDir
-      const folders = fs.readdirSync(tempExtractDir);
-      const innerFolder = folders.find(f => f.startsWith('ffmpeg'));
-
-      if (!innerFolder) {
-        throw new Error('Could not find ffmpeg folder inside extracted contents.');
-      }
-
-      const extractedBinDir = path.join(tempExtractDir, innerFolder, 'bin');
-      const extractedFfmpeg = path.join(extractedBinDir, 'ffmpeg.exe');
-      const extractedFfprobe = path.join(extractedBinDir, 'ffprobe.exe');
-
-      if (fs.existsSync(extractedFfmpeg)) {
-        fs.copyFileSync(extractedFfmpeg, FFMPEG_PATH);
-        console.log('✔ ffmpeg.exe moved to bin.');
+        console.log('✔ Cleanup complete.');
       } else {
-        throw new Error('ffmpeg.exe not found in extracted folder.');
-      }
+        // Linux extraction
+        const ffmpegZip = path.join(BIN_DIR, 'ffmpeg.zip');
+        const ffprobeZip = path.join(BIN_DIR, 'ffprobe.zip');
 
-      if (fs.existsSync(extractedFfprobe)) {
-        fs.copyFileSync(extractedFfprobe, FFPROBE_PATH);
-        console.log('✔ ffprobe.exe moved to bin.');
-      } else {
-        throw new Error('ffprobe.exe not found in extracted folder.');
-      }
+        console.log('Downloading ffmpeg for Linux...');
+        await downloadFile(FFMPEG_ZIP_URL, ffmpegZip);
+        console.log('Downloading ffprobe for Linux...');
+        await downloadFile(FFPROBE_ZIP_URL, ffprobeZip);
 
-      // Cleanup
-      console.log('Cleaning up temporary files...');
-      fs.rmSync(zipPath, { force: true });
-      fs.rmSync(tempExtractDir, { recursive: true, force: true });
-      console.log('✔ Cleanup complete.');
+        console.log('Extracting Linux binaries...');
+        await execAsync(`unzip -o "${ffmpegZip}" -d "${BIN_DIR}"`);
+        await execAsync(`unzip -o "${ffprobeZip}" -d "${BIN_DIR}"`);
+
+        // Set executable permissions
+        fs.chmodSync(FFMPEG_PATH, '755');
+        fs.chmodSync(FFPROBE_PATH, '755');
+
+        // Cleanup
+        console.log('Cleaning up temporary files...');
+        fs.rmSync(ffmpegZip, { force: true });
+        fs.rmSync(ffprobeZip, { force: true });
+        console.log('✔ Cleanup complete.');
+      }
     } else {
       console.log('✔ ffmpeg and ffprobe are already present.');
     }

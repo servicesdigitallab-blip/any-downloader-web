@@ -16,7 +16,7 @@ const PORT = process.env.PORT || 5000;
 const isVercel = process.env.VERCEL === '1' || !!process.env.VERCEL;
 const BIN_DIR = path.join(__dirname, 'bin');
 const DOWNLOADS_DIR = isVercel ? '/tmp' : path.join(__dirname, 'downloads');
-const YTDLP_PATH = path.join(BIN_DIR, 'yt-dlp.exe');
+const YTDLP_PATH = path.join(BIN_DIR, process.platform === 'win32' ? 'yt-dlp.exe' : 'yt-dlp');
 const FFMPEG_DIR = BIN_DIR; // ffmpeg.exe is in bin/
 
 if (!isVercel && !fs.existsSync(DOWNLOADS_DIR)) {
