@@ -859,7 +859,7 @@ app.post('/api/download', async (req, res) => {
         }
 
         const fileExt = quality === 'audio' ? 'mp3' : 'mp4';
-        const fileName = `[Any Downloader] - ${title.replace(/[\\/:*?"<>|]/g, '_')}.${fileExt}`;
+        const fileName = `[Any Download] - ${title.replace(/[\\/:*?"<>|]/g, '_')}.${fileExt}`;
 
         return res.json({
           streamUrl: decipheredUrl,
@@ -893,7 +893,7 @@ app.post('/api/download', async (req, res) => {
           }
 
           const fileExt = quality === 'audio' ? 'mp3' : 'mp4';
-          const fileName = `[Any Downloader] - ${title.replace(/[\\/:*?"<>|]/g, '_')}.${fileExt}`;
+          const fileName = `[Any Download] - ${title.replace(/[\\/:*?"<>|]/g, '_')}.${fileExt}`;
 
           return res.json({
             streamUrl: format.url,
@@ -906,7 +906,7 @@ app.post('/api/download', async (req, res) => {
             const cobaltResult = await fetchFromCobalt(url, quality);
             
             const fileExt = quality === 'audio' ? 'mp3' : 'mp4';
-            const fileName = `[Any Downloader] - ${title.replace(/[\\/:*?"<>|]/g, '_')}.${fileExt}`;
+            const fileName = `[Any Download] - ${title.replace(/[\\/:*?"<>|]/g, '_')}.${fileExt}`;
 
             return res.json({
               streamUrl: cobaltResult.url,
@@ -924,7 +924,7 @@ app.post('/api/download', async (req, res) => {
               }
 
               const fileExt = quality === 'audio' ? 'mp3' : 'mp4';
-              const fileName = `[Any Downloader] - ${title.replace(/[\\/:*?"<>|]/g, '_')}.${fileExt}`;
+              const fileName = `[Any Download] - ${title.replace(/[\\/:*?"<>|]/g, '_')}.${fileExt}`;
 
               return res.json({
                 streamUrl: format.url,
@@ -944,7 +944,7 @@ app.post('/api/download', async (req, res) => {
         const cobaltResult = await fetchFromCobalt(url, quality);
         
         const fileExt = quality === 'audio' ? 'mp3' : 'mp4';
-        const fileName = `[Any Downloader] - ${title.replace(/[\\/:*?"<>|]/g, '_')}.${fileExt}`;
+        const fileName = `[Any Download] - ${title.replace(/[\\/:*?"<>|]/g, '_')}.${fileExt}`;
 
         return res.json({
           streamUrl: cobaltResult.url,
@@ -1023,7 +1023,7 @@ app.post('/api/download', async (req, res) => {
     eta: 'Unknown',
     size: 'Unknown',
     filePath: '',
-    fileName: `[Any Downloader] - ${title.replace(/[\\/:*?"<>|]/g, '_')}.${fileExt}`,
+    fileName: `[Any Download] - ${title.replace(/[\\/:*?"<>|]/g, '_')}.${fileExt}`,
     error: null,
     clients: [],
     proc: proc // Save reference for cancellation

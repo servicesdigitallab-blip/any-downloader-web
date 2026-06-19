@@ -267,29 +267,92 @@ function App() {
 
       if (data.streamUrl) {
         if (data.direct) {
-          // Direct Download link (like Cobalt)
-          setDownloadStatus('completed');
-          setDownloadProgress(100);
+          // Direct Download link (like Cobalt) - download directly in browser with progress tracking!
+          setDownloadStatus('downloading');
+          setDownloadProgress(0);
           
-          const downloadLink = document.createElement('a');
-          downloadLink.href = data.streamUrl;
-          downloadLink.setAttribute('download', data.fileName);
-          downloadLink.setAttribute('target', '_blank');
-          document.body.appendChild(downloadLink);
-          downloadLink.click();
-          downloadLink.remove();
-          
-          // Add to local history list
-          const newHistoryItem = {
-            id: crypto.randomUUID(),
-            title: videoInfo.title,
-            thumbnail: videoInfo.thumbnail,
-            platform: videoInfo.platform,
-            quality: selectedQuality,
-            date: new Date().toLocaleDateString(),
-            downloadUrl: data.streamUrl
-          };
-          saveHistory([newHistoryItem, ...history]);
+          const streamUrl = data.streamUrl;
+          const fileName = data.fileName;
+
+          try {
+            const response = await fetch(streamUrl);
+            if (!response.ok) {
+              throw new Error('Failed to download video from Cobalt stream.');
+            }
+
+            const reader = response.body.getReader();
+            const contentLength = parseInt(response.headers.get('content-length'), 10) || 0;
+            
+            if (contentLength) {
+              setDownloadSize(`${(contentLength / (1024 * 1024)).toFixed(1)} MB`);
+            } else {
+              setDownloadSize('Unknown size');
+            }
+
+            let receivedLength = 0;
+            const chunks = [];
+            const startTime = Date.now();
+
+            while (true) {
+              const { done, value } = await reader.read();
+              if (done) break;
+
+              chunks.push(value);
+              receivedLength += value.length;
+
+              if (contentLength) {
+                const progress = Math.round((receivedLength / contentLength) * 100);
+                setDownloadProgress(progress);
+                
+                // Calculate speed
+                const elapsedSeconds = (Date.now() - startTime) / 1000;
+                const speed = elapsedSeconds > 0 ? (receivedLength / (1024 * 1024) / elapsedSeconds).toFixed(1) : '0';
+                setDownloadSpeed(`${(receivedLength / (1024 * 1024)).toFixed(1)} MB / ${(contentLength / (1024 * 1024)).toFixed(1)} MB (${speed} MB/s)`);
+              } else {
+                setDownloadSpeed(`${(receivedLength / (1024 * 1024)).toFixed(1)} MB downloaded`);
+              }
+            }
+
+            setDownloadStatus('completed');
+            setDownloadProgress(100);
+
+            const finalBlob = new Blob(chunks, { type: 'video/mp4' });
+            const localDownloadUrl = URL.createObjectURL(finalBlob);
+
+            const downloadLink = document.createElement('a');
+            downloadLink.href = localDownloadUrl;
+            downloadLink.setAttribute('download', fileName);
+            document.body.appendChild(downloadLink);
+            downloadLink.click();
+            downloadLink.remove();
+
+            // Add to local history list
+            const newHistoryItem = {
+              id: crypto.randomUUID(),
+              title: videoInfo.title,
+              thumbnail: videoInfo.thumbnail,
+              platform: videoInfo.platform,
+              quality: selectedQuality,
+              date: new Date().toLocaleDateString(),
+              downloadUrl: localDownloadUrl
+            };
+            saveHistory([newHistoryItem, ...history]);
+
+            setTimeout(() => URL.revokeObjectURL(localDownloadUrl), 10000);
+          } catch (fetchErr) {
+            console.error('Direct download stream read failed, falling back to basic download redirect:', fetchErr);
+            // Fallback: if browser fetch/cors fails, fall back to simple direct redirect download
+            setDownloadStatus('completed');
+            setDownloadProgress(100);
+            
+            const downloadLink = document.createElement('a');
+            downloadLink.href = streamUrl;
+            downloadLink.setAttribute('download', fileName);
+            downloadLink.setAttribute('target', '_blank');
+            document.body.appendChild(downloadLink);
+            downloadLink.click();
+            downloadLink.remove();
+          }
           return;
         }
 
