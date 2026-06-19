@@ -451,6 +451,8 @@ async function getYouTubeOEmbed(url) {
     description: `Uploaded by ${data.author_name || 'unknown'}. (Metadata retrieved via oEmbed)`,
     tags: []
   };
+}
+
 // GET /api/cobalt-instances - Get list of active community Cobalt instances
 app.get('/api/cobalt-instances', async (req, res) => {
   try {

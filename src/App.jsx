@@ -28,6 +28,21 @@ import {
 
 const API_BASE = import.meta.env.VITE_API_BASE || '';
 
+// Safe fetch helper that parses JSON and provides clean error messages
+async function safeFetchJson(url, options = {}) {
+  const response = await fetch(url, options);
+  const contentType = response.headers.get('content-type');
+  let data = null;
+  if (contentType && contentType.includes('application/json')) {
+    data = await response.json();
+  }
+  if (!response.ok) {
+    const errorMsg = (data && data.error) || `Server returned status ${response.status}`;
+    throw new Error(errorMsg);
+  }
+  return data;
+}
+
 // Define quality options
 const qualityOptions = [
   { value: '4k', label: '4K Ultra HD', height: 2160, tag: 'MKV/MP4' },
@@ -214,13 +229,7 @@ function App() {
     setHasRedirected(false);
 
     try {
-      const response = await fetch(`${API_BASE}/api/info?url=${encodeURIComponent(url.trim())}`);
-      const data = await response.json();
-
-      if (!response.ok) {
-        throw new Error(data.error || 'Failed to fetch video details.');
-      }
-
+      const data = await safeFetchJson(`${API_BASE}/api/info?url=${encodeURIComponent(url.trim())}`);
       setVideoInfo(data);
       if (data.maxHeight) {
         if (data.maxHeight >= 2160) setSelectedQuality('4k');
@@ -434,7 +443,7 @@ function App() {
     setDownloadSpeed('Retrying via server-side extractors...');
 
     try {
-      const response = await fetch(`${API_BASE}/api/download`, {
+      const data = await safeFetchJson(`${API_BASE}/api/download`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -443,12 +452,6 @@ function App() {
           title: videoInfo.title
         })
       });
-
-      const data = await response.json();
-
-      if (!response.ok) {
-        throw new Error(data.error || 'Failed to start download.');
-      }
 
       if (data.streamUrl) {
         if (data.direct) {
