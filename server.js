@@ -314,7 +314,28 @@ app.get('/api/info', async (req, res) => {
         throw new Error('Could not parse YouTube video ID.');
       }
       const yt = await getYoutubeClient();
-      const videoInfo = await yt.getInfo(videoId);
+      
+      let videoInfo = null;
+      let lastErr = null;
+      const clientsToTry = ['WEB', 'ANDROID', 'TV', 'MWEB'];
+      
+      for (const clientName of clientsToTry) {
+        try {
+          console.log(`Trying youtubei.js client: ${clientName}`);
+          videoInfo = await yt.getInfo(videoId, { client: clientName });
+          if (videoInfo && videoInfo.streaming_data) {
+            console.log(`Successfully fetched videoInfo using client: ${clientName}`);
+            break;
+          }
+        } catch (e) {
+          console.warn(`youtubei.js client ${clientName} failed:`, e.message);
+          lastErr = e;
+        }
+      }
+      
+      if (!videoInfo) {
+        throw lastErr || new Error('Failed to resolve video info with all clients.');
+      }
       
       const formats = videoInfo.streaming_data?.formats || [];
       const adaptive = videoInfo.streaming_data?.adaptive_formats || [];
@@ -325,9 +346,18 @@ app.get('/api/info', async (req, res) => {
       // Find best thumbnail
       const thumbnails = videoInfo.basic_info.thumbnail || [];
       const bestThumbnail = thumbnails.length > 0 ? thumbnails[thumbnails.length - 1].url : '';
+      
+      // Fallback title extraction
+      let titleVal = videoInfo.basic_info.title;
+      if (!titleVal && videoInfo.page && videoInfo.page[0]) {
+        try {
+          titleVal = videoInfo.page[0].videoDetails?.title;
+        } catch (e) {}
+      }
+      if (!titleVal) titleVal = 'YouTube Video';
 
       const info = {
-        title: videoInfo.basic_info.title || 'YouTube Video',
+        title: titleVal,
         duration: formatDuration(videoInfo.basic_info.duration || 0),
         duration_raw: videoInfo.basic_info.duration || 0,
         thumbnail: bestThumbnail,
@@ -536,7 +566,28 @@ app.post('/api/download', async (req, res) => {
         }
         
         const yt = await getYoutubeClient();
-        const videoInfo = await yt.getInfo(videoId);
+        
+        let videoInfo = null;
+        let lastErr = null;
+        const clientsToTry = ['WEB', 'ANDROID', 'TV', 'MWEB'];
+        
+        for (const clientName of clientsToTry) {
+          try {
+            console.log(`Trying youtubei.js download client: ${clientName}`);
+            videoInfo = await yt.getInfo(videoId, { client: clientName });
+            if (videoInfo && videoInfo.streaming_data) {
+              console.log(`Successfully fetched videoInfo for download using client: ${clientName}`);
+              break;
+            }
+          } catch (e) {
+            console.warn(`youtubei.js download client ${clientName} failed:`, e.message);
+            lastErr = e;
+          }
+        }
+        
+        if (!videoInfo) {
+          throw lastErr || new Error('Failed to resolve download info with all clients.');
+        }
         
         let formatOpts = {};
         if (quality === 'audio') {
