@@ -6,6 +6,50 @@ import fs from 'fs';
 import { fileURLToPath } from 'url';
 import crypto from 'crypto';
 import ytdl from '@distube/ytdl-core';
+import { Innertube, Platform } from 'youtubei.js';
+
+// Setup custom evaluator for deciphering signatures in Node/Vercel
+Platform.shim.eval = (code, env) => {
+  const fn = new Function('env', `${code.output}\nreturn { ...env };`);
+  return fn(env);
+};
+
+let youtubeClient = null;
+async function getYoutubeClient() {
+  if (!youtubeClient) {
+    youtubeClient = await Innertube.create();
+  }
+  return youtubeClient;
+}
+
+// Function to extract YouTube Video ID
+function getYouTubeID(url) {
+  try {
+    const parsed = new URL(url);
+    if (parsed.hostname.includes('youtu.be')) {
+      return parsed.pathname.substring(1);
+    }
+    if (parsed.searchParams.has('v')) {
+      return parsed.searchParams.get('v');
+    }
+    const pathParts = parsed.pathname.split('/');
+    const shortsIndex = pathParts.indexOf('shorts');
+    if (shortsIndex !== -1 && pathParts[shortsIndex + 1]) {
+      return pathParts[shortsIndex + 1];
+    }
+    const embedIndex = pathParts.indexOf('embed');
+    if (embedIndex !== -1 && pathParts[embedIndex + 1]) {
+      return pathParts[embedIndex + 1];
+    }
+    return ytdl.getVideoID(url);
+  } catch (e) {
+    try {
+      return ytdl.getVideoID(url);
+    } catch (err) {
+      return null;
+    }
+  }
+}
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -264,54 +308,87 @@ app.get('/api/info', async (req, res) => {
   const isYouTube = url.includes('youtube.com') || url.includes('youtu.be');
   if (isYouTube) {
     try {
-      console.log(`Using @distube/ytdl-core to fetch YouTube info for: ${url}`);
-      const data = await ytdl.getInfo(url);
-      const formats = data.formats || [];
-      const heights = formats.map(f => f.height || 0);
+      console.log(`Using youtubei.js to fetch YouTube info for: ${url}`);
+      const videoId = getYouTubeID(url);
+      if (!videoId) {
+        throw new Error('Could not parse YouTube video ID.');
+      }
+      const yt = await getYoutubeClient();
+      const videoInfo = await yt.getInfo(videoId);
+      
+      const formats = videoInfo.streaming_data?.formats || [];
+      const adaptive = videoInfo.streaming_data?.adaptive_formats || [];
+      const allFormats = [...formats, ...adaptive];
+      const heights = allFormats.map(f => f.height || 0);
       const maxHeight = Math.max(...heights, 0);
 
       // Find best thumbnail
-      const thumbnails = data.videoDetails.thumbnails || [];
+      const thumbnails = videoInfo.basic_info.thumbnail || [];
       const bestThumbnail = thumbnails.length > 0 ? thumbnails[thumbnails.length - 1].url : '';
 
       const info = {
-        title: data.videoDetails.title || 'YouTube Video',
-        duration: formatDuration(parseInt(data.videoDetails.lengthSeconds) || 0),
-        duration_raw: parseInt(data.videoDetails.lengthSeconds) || 0,
+        title: videoInfo.basic_info.title || 'YouTube Video',
+        duration: formatDuration(videoInfo.basic_info.duration || 0),
+        duration_raw: videoInfo.basic_info.duration || 0,
         thumbnail: bestThumbnail,
         platform: 'youtube',
         maxHeight,
         originalUrl: url,
-        description: data.videoDetails.description || '',
-        tags: data.videoDetails.keywords || []
+        description: videoInfo.basic_info.short_description || '',
+        tags: videoInfo.basic_info.keywords || []
       };
 
       return res.json(info);
-    } catch (ytdlErr) {
-      console.warn(`@distube/ytdl-core failed, falling back to YouTube oEmbed:`, ytdlErr.message);
+    } catch (ytErr) {
+      console.warn(`youtubei.js failed to fetch info, trying @distube/ytdl-core fallback:`, ytErr.message);
       try {
-        const info = await getYouTubeOEmbed(url);
+        const data = await ytdl.getInfo(url);
+        const formats = data.formats || [];
+        const heights = formats.map(f => f.height || 0);
+        const maxHeight = Math.max(...heights, 0);
+
+        const thumbnails = data.videoDetails.thumbnails || [];
+        const bestThumbnail = thumbnails.length > 0 ? thumbnails[thumbnails.length - 1].url : '';
+
+        const info = {
+          title: data.videoDetails.title || 'YouTube Video',
+          duration: formatDuration(parseInt(data.videoDetails.lengthSeconds) || 0),
+          duration_raw: parseInt(data.videoDetails.lengthSeconds) || 0,
+          thumbnail: bestThumbnail,
+          platform: 'youtube',
+          maxHeight,
+          originalUrl: url,
+          description: data.videoDetails.description || '',
+          tags: data.videoDetails.keywords || []
+        };
+
         return res.json(info);
-      } catch (oEmbedErr) {
-        console.warn(`YouTube oEmbed failed, falling back to Invidious metadata:`, oEmbedErr.message);
+      } catch (ytdlErr) {
+        console.warn(`@distube/ytdl-core failed, falling back to YouTube oEmbed:`, ytdlErr.message);
         try {
-          const videoId = ytdl.getVideoID(url);
-          const invidiousData = await fetchInvidiousVideoInfo(videoId);
-          
-          const info = {
-            title: invidiousData.title || 'YouTube Video',
-            duration: formatDuration(invidiousData.lengthSeconds || 0),
-            duration_raw: invidiousData.lengthSeconds || 0,
-            thumbnail: invidiousData.videoThumbnails && invidiousData.videoThumbnails.length > 0 ? invidiousData.videoThumbnails[invidiousData.videoThumbnails.length - 1].url : '',
-            platform: 'youtube',
-            maxHeight: 720,
-            originalUrl: url,
-            description: invidiousData.description || '',
-            tags: invidiousData.keywords || []
-          };
+          const info = await getYouTubeOEmbed(url);
           return res.json(info);
-        } catch (invErr) {
-          console.warn(`Invidious fallback failed, letting it fall back to yt-dlp:`, invErr.message);
+        } catch (oEmbedErr) {
+          console.warn(`YouTube oEmbed failed, falling back to Invidious metadata:`, oEmbedErr.message);
+          try {
+            const videoId = getYouTubeID(url);
+            const invidiousData = await fetchInvidiousVideoInfo(videoId);
+            
+            const info = {
+              title: invidiousData.title || 'YouTube Video',
+              duration: formatDuration(invidiousData.lengthSeconds || 0),
+              duration_raw: invidiousData.lengthSeconds || 0,
+              thumbnail: invidiousData.videoThumbnails && invidiousData.videoThumbnails.length > 0 ? invidiousData.videoThumbnails[invidiousData.videoThumbnails.length - 1].url : '',
+              platform: 'youtube',
+              maxHeight: 720,
+              originalUrl: url,
+              description: invidiousData.description || '',
+              tags: invidiousData.keywords || []
+            };
+            return res.json(info);
+          } catch (invErr) {
+            console.warn(`Invidious fallback failed, letting it fall back to yt-dlp:`, invErr.message);
+          }
         }
       }
     }
@@ -452,28 +529,46 @@ app.post('/api/download', async (req, res) => {
     const isYouTube = url.includes('youtube.com') || url.includes('youtu.be');
     if (isYouTube) {
       try {
-        console.log(`Getting direct download link for YouTube: ${url}`);
-        const data = await ytdl.getInfo(url);
-        
-        let ytdlQuality = 'highest';
-        if (quality === '360p' || quality === '480p') {
-          ytdlQuality = '18'; // 360p
-        } else if (quality === 'audio') {
-          ytdlQuality = 'highestaudio';
+        console.log(`Getting direct download link for YouTube via youtubei.js: ${url}`);
+        const videoId = getYouTubeID(url);
+        if (!videoId) {
+          throw new Error('Could not parse YouTube video ID.');
         }
         
-        const formats = data.formats || [];
-        const filterStr = quality === 'audio' ? 'audioonly' : 'videoandaudio';
-        const format = ytdl.chooseFormat(formats, { quality: ytdlQuality, filter: filterStr });
+        const yt = await getYoutubeClient();
+        const videoInfo = await yt.getInfo(videoId);
         
-        if (!format || !format.url) {
-          throw new Error('No compatible YouTube stream format found with audio and video.');
+        let formatOpts = {};
+        if (quality === 'audio') {
+          formatOpts = { quality: 'best', type: 'audio' };
+        } else {
+          // Map quality requests
+          formatOpts = {
+            quality: (quality === '360p' || quality === '480p') ? '360p' : (quality === '720p' ? '720p' : 'best'),
+            type: 'video+audio'
+          };
+        }
+        
+        console.log('Choosing format with options:', formatOpts);
+        const format = videoInfo.chooseFormat(formatOpts);
+        if (!format) {
+          throw new Error('No compatible YouTube stream format found.');
+        }
+
+        const player = yt.session?.player;
+        if (!player) {
+          throw new Error('Innertube player session not found.');
+        }
+        
+        const decipheredUrl = await format.decipher(player);
+        if (!decipheredUrl) {
+          throw new Error('Deciphering YouTube stream URL returned empty.');
         }
 
         // Get format file size
-        let contentLength = parseInt(format.contentLength);
-        if (!contentLength || isNaN(contentLength)) {
-          const headRes = await fetch(format.url, { method: 'HEAD' });
+        let contentLength = parseInt(format.content_length) || 0;
+        if (!contentLength) {
+          const headRes = await fetch(decipheredUrl, { method: 'HEAD' });
           contentLength = parseInt(headRes.headers.get('content-length')) || 0;
         }
 
@@ -481,18 +576,34 @@ app.post('/api/download', async (req, res) => {
         const fileName = `[Any Downloader] - ${title.replace(/[\\/:*?"<>|]/g, '_')}.${fileExt}`;
 
         return res.json({
-          streamUrl: format.url,
+          streamUrl: decipheredUrl,
           totalSize: contentLength,
           fileName
         });
       } catch (err) {
-        console.warn('ytdl.getInfo failed on Vercel, trying Invidious fallback:', err.message);
+        console.warn('youtubei.js download resolution failed on Vercel, trying @distube/ytdl-core fallback:', err.message);
         try {
-          const videoId = ytdl.getVideoID(url);
-          const invidiousData = await fetchInvidiousVideoInfo(videoId);
-          const format = getInvidiousFormat(invidiousData, quality);
+          const data = await ytdl.getInfo(url);
+          
+          let ytdlQuality = 'highest';
+          if (quality === '360p' || quality === '480p') {
+            ytdlQuality = '18'; // 360p
+          } else if (quality === 'audio') {
+            ytdlQuality = 'highestaudio';
+          }
+          
+          const formats = data.formats || [];
+          const filterStr = quality === 'audio' ? 'audioonly' : 'videoandaudio';
+          const format = ytdl.chooseFormat(formats, { quality: ytdlQuality, filter: filterStr });
+          
           if (!format || !format.url) {
-            throw new Error('No compatible YouTube download stream found on Invidious.');
+            throw new Error('No compatible YouTube stream format found with audio and video.');
+          }
+
+          let contentLength = parseInt(format.contentLength);
+          if (!contentLength || isNaN(contentLength)) {
+            const headRes = await fetch(format.url, { method: 'HEAD' });
+            contentLength = parseInt(headRes.headers.get('content-length')) || 0;
           }
 
           const fileExt = quality === 'audio' ? 'mp3' : 'mp4';
@@ -500,12 +611,31 @@ app.post('/api/download', async (req, res) => {
 
           return res.json({
             streamUrl: format.url,
-            totalSize: format.size,
+            totalSize: contentLength,
             fileName
           });
-        } catch (invErr) {
-          console.error('Failed to resolve direct streaming info on Vercel (both ytdl and Invidious failed):', invErr.message);
-          return res.status(500).json({ error: `Vercel download failed: ${invErr.message}` });
+        } catch (ytdlErr) {
+          console.warn('ytdl-core download resolution failed on Vercel, trying Invidious fallback:', ytdlErr.message);
+          try {
+            const videoId = getYouTubeID(url);
+            const invidiousData = await fetchInvidiousVideoInfo(videoId);
+            const format = getInvidiousFormat(invidiousData, quality);
+            if (!format || !format.url) {
+              throw new Error('No compatible YouTube download stream found on Invidious.');
+            }
+
+            const fileExt = quality === 'audio' ? 'mp3' : 'mp4';
+            const fileName = `[Any Downloader] - ${title.replace(/[\\/:*?"<>|]/g, '_')}.${fileExt}`;
+
+            return res.json({
+              streamUrl: format.url,
+              totalSize: format.size,
+              fileName
+            });
+          } catch (invErr) {
+            console.error('All direct streaming info methods failed on Vercel:', invErr.message);
+            return res.status(500).json({ error: `Vercel download failed: ${invErr.message}` });
+          }
         }
       }
     } else {
