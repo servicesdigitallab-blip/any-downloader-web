@@ -139,52 +139,53 @@ app.get('/api/debug', (req, res) => {
   }
 });
 
-// Community Cobalt API v10 instances fallback list
-const COBALT_INSTANCES = [
-  'https://api.cobalt.blackcat.sweeux.org',
-  'https://rue-cobalt.xenon.zone'
-];
+// Helper: Resolve download via community Cobalt API v10 with dynamic scanning
+async function getCobaltInstances() {
+  const staticInstances = [
+    'https://api.cobalt.blackcat.sweeux.org',
+    'https://rue-cobalt.xenon.zone',
+    'https://dog.kittycat.boo',
+    'https://cobaltapi.kittycat.boo',
+    'https://fox.kittycat.boo',
+    'https://cobaltapi.cjs.nz',
+    'https://sunny.imput.net',
+    'https://kityune.imput.net',
+    'https://nachos.imput.net',
+    'https://blossom.imput.net',
+    'https://api.dl.woof.monster',
+    'https://subito-c.meowing.de'
+  ];
 
-// Helper: Fetch direct content length of a URL using HEAD or GET range request
-async function getUrlContentLength(url) {
   try {
-    const headRes = await fetch(url, {
-      method: 'HEAD',
+    console.log('Fetching active Cobalt instances dynamically from cobalt.directory...');
+    const res = await fetch('https://cobalt.directory/', { 
       headers: {
         'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36'
-      }
+      },
+      signal: AbortSignal.timeout(3000) 
     });
-    if (headRes.ok) {
-      const len = parseInt(headRes.headers.get('content-length'), 10);
-      if (len > 0) return len;
-    }
-  } catch (e) {
-    console.warn('HEAD request failed for content length, trying GET range:', e.message);
-  }
-
-  try {
-    const getRes = await fetch(url, {
-      headers: {
-        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36',
-        'Range': 'bytes=0-0'
-      }
-    });
-    if (getRes.ok || getRes.status === 206) {
-      const contentRange = getRes.headers.get('content-range');
-      if (contentRange) {
-        const match = contentRange.match(/\/(\d+)$/);
-        if (match) {
-          return parseInt(match[1], 10);
+    if (res.ok) {
+      const html = await res.text();
+      const regex = /(apiHost|api):"([^"]+)"/g;
+      let match;
+      const scraped = [];
+      while ((match = regex.exec(html)) !== null) {
+        const host = match[2];
+        if (host && !host.includes('localhost') && host.includes('.')) {
+          scraped.push(`https://${host}`);
         }
       }
-      const len = parseInt(getRes.headers.get('content-length'), 10);
-      if (len > 0) return len;
+      if (scraped.length > 0) {
+        const combined = [...new Set([...staticInstances, ...scraped])];
+        console.log(`Successfully retrieved ${scraped.length} dynamic Cobalt instances. Total pool: ${combined.length}`);
+        return combined;
+      }
     }
   } catch (e) {
-    console.warn('GET range request failed for content length:', e.message);
+    console.warn('Failed to fetch dynamic Cobalt instances, using static list:', e.message);
   }
 
-  return 0;
+  return staticInstances;
 }
 
 // Helper: Resolve download via community Cobalt API v10
@@ -207,7 +208,11 @@ async function fetchFromCobalt(videoUrl, quality) {
     }
   }
 
-  for (const instance of COBALT_INSTANCES) {
+  const instances = await getCobaltInstances();
+  // Try at most 4 instances sequentially to avoid Vercel 10s function timeouts
+  const targetInstances = instances.slice(0, 4);
+
+  for (const instance of targetInstances) {
     try {
       console.log(`Trying Cobalt instance: ${instance} for url: ${videoUrl}`);
       const response = await fetch(instance, {
@@ -222,7 +227,7 @@ async function fetchFromCobalt(videoUrl, quality) {
           videoQuality: videoQuality,
           downloadMode: downloadMode
         }),
-        signal: AbortSignal.timeout(8000)
+        signal: AbortSignal.timeout(2200) // Fast 2.2s timeout per check
       });
 
       if (response.ok) {
