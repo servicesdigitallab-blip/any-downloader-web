@@ -43,25 +43,16 @@ async function safeFetchJson(url, options = {}) {
   return data;
 }
 
-// Get total content length of a URL using the chunked proxy
+// Get total content length of a URL using the server size lookup
 async function getUrlTotalSize(streamUrl) {
   try {
-    const chunkUrl = `${API_BASE}/api/chunk?url=${encodeURIComponent(streamUrl)}&start=0&end=0`;
-    const response = await fetch(chunkUrl);
-    if (response.ok) {
-      const contentRange = response.headers.get('content-range');
-      if (contentRange) {
-        const parts = contentRange.split('/');
-        if (parts.length > 1) {
-          const size = parseInt(parts[1], 10);
-          if (size && !isNaN(size) && size > 0) {
-            return size;
-          }
-        }
-      }
+    const sizeUrl = `${API_BASE}/api/size?url=${encodeURIComponent(streamUrl)}`;
+    const data = await safeFetchJson(sizeUrl);
+    if (data && data.size && data.size > 0) {
+      return data.size;
     }
   } catch (err) {
-    console.warn('Failed to get URL total size via chunk proxy:', err);
+    console.warn('Failed to get URL total size via server lookup:', err);
   }
   return 0;
 }
@@ -331,14 +322,13 @@ function App() {
     let cobaltStreamUrl = '';
     let cobaltFileName = '';
 
-    // Loop through at most 10 instances on the client side to find one that works!
-    const targetInstances = instances.slice(0, 10);
+    // Query multiple instances in parallel to find the fastest successful one!
+    const targetInstances = instances.slice(0, 8);
+    setDownloadSpeed('Connecting to download servers...');
 
-    for (let i = 0; i < targetInstances.length; i++) {
-      const instance = targetInstances[i];
-      setDownloadSpeed(`Connecting to download server ${i + 1}/${targetInstances.length}...`);
-      try {
-        const response = await fetch(instance, {
+    try {
+      const promises = targetInstances.map(async (instance) => {
+        const res = await fetch(instance, {
           method: 'POST',
           headers: {
             'Accept': 'application/json',
@@ -349,27 +339,40 @@ function App() {
             videoQuality: videoQuality,
             downloadMode: downloadMode
           }),
-          signal: AbortSignal.timeout(1800) // Fast 1.8s check per server
+          signal: AbortSignal.timeout(3000) // 3 seconds timeout
         });
 
-        if (response.ok) {
-          const data = await response.json();
-          if (data && (data.status === 'redirect' || data.status === 'tunnel' || data.url)) {
-            cobaltStreamUrl = data.url;
-            cobaltFileName = data.filename || `download.${selectedQuality === 'audio' ? 'mp3' : 'mp4'}`;
-            success = true;
-            break;
-          } else if (data && data.status === 'picker' && data.picker && data.picker.length > 0) {
-            const item = data.picker.find(p => p.type === 'video') || data.picker[0];
-            cobaltStreamUrl = item.url;
-            cobaltFileName = data.filename || `download.${selectedQuality === 'audio' ? 'mp3' : 'mp4'}`;
-            success = true;
-            break;
-          }
+        if (!res.ok) {
+          throw new Error('Not ok');
         }
-      } catch (err) {
-        console.warn(`Client-side Cobalt check failed for ${instance}:`, err.message);
+
+        const data = await res.json();
+        if (data && (data.status === 'redirect' || data.status === 'tunnel' || data.url)) {
+          return {
+            url: data.url,
+            filename: data.filename || `download.${selectedQuality === 'audio' ? 'mp3' : 'mp4'}`,
+            instance
+          };
+        } else if (data && data.status === 'picker' && data.picker && data.picker.length > 0) {
+          const item = data.picker.find(p => p.type === 'video') || data.picker[0];
+          return {
+            url: item.url,
+            filename: data.filename || `download.${selectedQuality === 'audio' ? 'mp3' : 'mp4'}`,
+            instance
+          };
+        }
+        throw new Error('Invalid format');
+      });
+
+      const fastestResult = await Promise.any(promises);
+      if (fastestResult) {
+        cobaltStreamUrl = fastestResult.url;
+        cobaltFileName = fastestResult.filename;
+        success = true;
+        console.log('Fastest Cobalt instance resolved:', fastestResult.instance);
       }
+    } catch (anyErr) {
+      console.warn('All parallel client-side Cobalt checks failed:', anyErr.message);
     }
 
     let clientDownloadSuccess = false;

@@ -690,7 +690,7 @@ app.get('/api/info', async (req, res) => {
         
         let videoInfo = null;
         let lastErr = null;
-        const clientsToTry = ['WEB', 'ANDROID', 'TV', 'MWEB'];
+        const clientsToTry = ['TV', 'ANDROID', 'MWEB', 'WEB'];
         
         for (const clientName of clientsToTry) {
           try {
@@ -991,6 +991,21 @@ app.get('/api/chunk', async (req, res) => {
   }
 });
 
+// GET /api/size - Get content length of a URL
+app.get('/api/size', async (req, res) => {
+  const { url } = req.query;
+  if (!url) {
+    return res.status(400).json({ error: 'URL parameter is required' });
+  }
+  try {
+    const size = await getContentLength(url);
+    res.json({ size });
+  } catch (err) {
+    console.error('Error fetching size:', err);
+    res.status(500).json({ error: err.message });
+  }
+});
+
 // POST /api/download - Start a download job
 app.post('/api/download', async (req, res) => {
   const { url, quality, title } = req.body;
@@ -1021,7 +1036,7 @@ app.post('/api/download', async (req, res) => {
         
         let videoInfo = null;
         let lastErr = null;
-        const clientsToTry = ['WEB', 'ANDROID', 'TV', 'MWEB'];
+        const clientsToTry = ['TV', 'ANDROID', 'MWEB', 'WEB'];
         
         for (const clientName of clientsToTry) {
           try {
