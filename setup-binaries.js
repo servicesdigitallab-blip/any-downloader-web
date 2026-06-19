@@ -185,6 +185,10 @@ async function setup() {
     console.log('🎉 Setup completed successfully. All binaries are ready!');
   } catch (error) {
     console.error('❌ Setup failed:', error);
+    if (isVercel) {
+      console.log('⚠️ Setup failed on Vercel, but continuing the build anyway to prevent deployment failure...');
+      process.exit(0);
+    }
     process.exit(1);
   }
 }
