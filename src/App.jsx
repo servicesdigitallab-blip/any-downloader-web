@@ -43,6 +43,29 @@ async function safeFetchJson(url, options = {}) {
   return data;
 }
 
+// Get total content length of a URL using the chunked proxy
+async function getUrlTotalSize(streamUrl) {
+  try {
+    const chunkUrl = `${API_BASE}/api/chunk?url=${encodeURIComponent(streamUrl)}&start=0&end=0`;
+    const response = await fetch(chunkUrl);
+    if (response.ok) {
+      const contentRange = response.headers.get('content-range');
+      if (contentRange) {
+        const parts = contentRange.split('/');
+        if (parts.length > 1) {
+          const size = parseInt(parts[1], 10);
+          if (size && !isNaN(size) && size > 0) {
+            return size;
+          }
+        }
+      }
+    }
+  } catch (err) {
+    console.warn('Failed to get URL total size via chunk proxy:', err);
+  }
+  return 0;
+}
+
 // Define quality options
 const qualityOptions = [
   { value: '4k', label: '4K Ultra HD', height: 2160, tag: 'MKV/MP4' },
@@ -357,23 +380,31 @@ function App() {
       setDownloadProgress(0);
       setDownloadSpeed('Initializing stream...');
       
+      let totalSize = 0;
       try {
+        totalSize = await getUrlTotalSize(cobaltStreamUrl);
+      } catch (e) {
+        console.warn('Could not determine total size of stream:', e);
+      }
+
+      if (totalSize) {
+        setDownloadSize(`${(totalSize / (1024 * 1024)).toFixed(1)} MB`);
+      } else {
+        setDownloadSize('Unknown size');
+      }
+
+      let directFetchSuccess = false;
+      const chunks = [];
+
+      try {
+        console.log('Attempting direct browser fetch for:', cobaltStreamUrl);
         const response = await fetch(cobaltStreamUrl);
         if (!response.ok) {
-          throw new Error('Failed to download video stream.');
+          throw new Error(`Direct fetch returned status ${response.status}`);
         }
 
         const reader = response.body.getReader();
-        const contentLength = parseInt(response.headers.get('content-length'), 10) || 0;
-        
-        if (contentLength) {
-          setDownloadSize(`${(contentLength / (1024 * 1024)).toFixed(1)} MB`);
-        } else {
-          setDownloadSize('Unknown size');
-        }
-
         let receivedLength = 0;
-        const chunks = [];
         const startTime = Date.now();
 
         while (true) {
@@ -383,30 +414,78 @@ function App() {
           chunks.push(value);
           receivedLength += value.length;
 
-          if (contentLength) {
-            const progress = Math.round((receivedLength / contentLength) * 100);
-            setDownloadProgress(progress);
-            
-            const elapsedSeconds = (Date.now() - startTime) / 1000;
-            const speed = elapsedSeconds > 0 ? (receivedLength / (1024 * 1024) / elapsedSeconds).toFixed(1) : '0';
-            setDownloadSpeed(`${(receivedLength / (1024 * 1024)).toFixed(1)} MB / ${(contentLength / (1024 * 1024)).toFixed(1)} MB (${speed} MB/s)`);
+          const activeTotal = totalSize || receivedLength;
+          const progress = Math.round((receivedLength / activeTotal) * 100);
+          setDownloadProgress(Math.min(progress, 99)); // Keep at 99% until fully complete
+
+          const elapsedSeconds = (Date.now() - startTime) / 1000;
+          const speed = elapsedSeconds > 0 ? (receivedLength / (1024 * 1024) / elapsedSeconds).toFixed(1) : '0';
+          
+          if (totalSize) {
+            setDownloadSpeed(`${(receivedLength / (1024 * 1024)).toFixed(1)} MB / ${(totalSize / (1024 * 1024)).toFixed(1)} MB (${speed} MB/s)`);
           } else {
-            setDownloadSpeed(`${(receivedLength / (1024 * 1024)).toFixed(1)} MB downloaded`);
+            setDownloadSpeed(`${(receivedLength / (1024 * 1024)).toFixed(1)} MB downloaded (${speed} MB/s)`);
           }
         }
 
         if (receivedLength === 0) {
-          throw new Error('Downloaded 0 bytes from stream.');
+          throw new Error('Downloaded 0 bytes from direct stream.');
         }
 
+        directFetchSuccess = true;
+      } catch (directErr) {
+        console.warn('Direct client-side stream download failed (CORS or network), falling back to chunked proxy download:', directErr.message);
+      }
+
+      if (!directFetchSuccess) {
+        // Fallback 1: Chunked download via our same-origin proxy
+        if (totalSize > 0) {
+          try {
+            console.log('Starting chunked proxy download for:', cobaltStreamUrl);
+            setDownloadSpeed('Downloading via proxy chunks...');
+            const chunkSize = 4 * 1024 * 1024; // 4MB chunks
+            let start = 0;
+            let downloadedBytes = 0;
+            const startTime = Date.now();
+
+            while (start < totalSize) {
+              const end = Math.min(start + chunkSize - 1, totalSize - 1);
+              const chunkUrl = `${API_BASE}/api/chunk?url=${encodeURIComponent(cobaltStreamUrl)}&start=${start}&end=${end}`;
+              
+              const chunkResponse = await fetch(chunkUrl);
+              if (!chunkResponse.ok) {
+                throw new Error('Error downloading video chunk via proxy.');
+              }
+              
+              const chunkBlob = await chunkResponse.blob();
+              chunks.push(chunkBlob);
+              
+              downloadedBytes += (end - start + 1);
+              const progress = Math.round((downloadedBytes / totalSize) * 100);
+              setDownloadProgress(Math.min(progress, 99));
+
+              const elapsedSeconds = (Date.now() - startTime) / 1000;
+              const speed = elapsedSeconds > 0 ? (downloadedBytes / (1024 * 1024) / elapsedSeconds).toFixed(1) : '0';
+              setDownloadSpeed(`${(downloadedBytes / (1024 * 1024)).toFixed(1)} MB / ${(totalSize / (1024 * 1024)).toFixed(1)} MB (${speed} MB/s)`);
+              
+              start = end + 1;
+            }
+            directFetchSuccess = true; // Mark as success so we construct the blob
+          } catch (proxyErr) {
+            console.error('Chunked proxy download failed:', proxyErr.message);
+          }
+        }
+      }
+
+      if (directFetchSuccess && chunks.length > 0) {
         setDownloadStatus('completed');
         setDownloadProgress(100);
 
-        const finalBlob = new Blob(chunks, { type: 'video/mp4' });
+        const finalBlob = new Blob(chunks, { type: selectedQuality === 'audio' ? 'audio/mpeg' : 'video/mp4' });
         const localDownloadUrl = URL.createObjectURL(finalBlob);
 
         // Standardize file name prefix
-        const finalFileName = `[Any Download] - ${cobaltFileName.replace(/^\[.*?\]\s*-\s*/, '')}`;
+        const finalFileName = `[Any Downloader] - ${cobaltFileName.replace(/^\[.*?\]\s*-\s*/, '')}`;
 
         const downloadLink = document.createElement('a');
         downloadLink.href = localDownloadUrl;
@@ -428,18 +507,18 @@ function App() {
 
         setTimeout(() => URL.revokeObjectURL(localDownloadUrl), 10000);
         clientDownloadSuccess = true;
-      } catch (streamErr) {
-        console.warn('Direct client-side stream download failed, falling back to native browser redirect:', streamErr.message);
-        
-        // Native browser download fallback (bypasses CORS)
+      } else {
+        // Fallback 2: Direct browser redirect with noreferrer
+        console.warn('All stream fetch methods failed, falling back to direct browser redirect...');
         setDownloadStatus('completed');
         setDownloadProgress(100);
         
-        const finalFileName = `[Any Download] - ${cobaltFileName.replace(/^\[.*?\]\s*-\s*/, '')}`;
+        const finalFileName = `[Any Downloader] - ${cobaltFileName.replace(/^\[.*?\]\s*-\s*/, '')}`;
         const downloadLink = document.createElement('a');
         downloadLink.href = cobaltStreamUrl;
         downloadLink.setAttribute('download', finalFileName);
         downloadLink.setAttribute('target', '_blank');
+        downloadLink.setAttribute('rel', 'noreferrer'); // IMPORTANT: bypass hotlinking blocks!
         document.body.appendChild(downloadLink);
         downloadLink.click();
         downloadLink.remove();
@@ -872,7 +951,9 @@ function App() {
                     alt={videoInfo.title}
                     className="video-thumbnail"
                   />
-                  <span className="video-duration">{videoInfo.duration}</span>
+                  {videoInfo.duration && videoInfo.duration !== 'Unknown' && (
+                    <span className="video-duration">{videoInfo.duration}</span>
+                  )}
                 </div>
               )}
 

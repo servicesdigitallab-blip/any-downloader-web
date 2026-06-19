@@ -344,6 +344,56 @@ async function getContentLength(streamUrl) {
   return 0;
 }
 
+// Helper: Parse duration from HTML page metadata (JSON-LD, itemprop, og:video:duration)
+function parseDurationFromHtml(html) {
+  try {
+    // 1. Try JSON-LD or schema duration (commonly found in TikTok, Instagram, Pinterest)
+    const matchLd = html.match(/"duration"\s*:\s*"([^"]+)"/i);
+    if (matchLd && matchLd[1]) {
+      const val = matchLd[1];
+      if (val.startsWith('PT')) {
+        const sec = parseISO8601Duration(val);
+        if (sec > 0) return sec;
+      } else {
+        const sec = parseFloat(val);
+        if (!isNaN(sec) && sec > 0) return Math.round(sec);
+      }
+    }
+
+    // 2. itemprop="duration"
+    const matchItemprop = html.match(/itemprop="duration"\s+content="([^"]+)"/i) ||
+                          html.match(/content="([^"]+)"\s+itemprop="duration"/i);
+    if (matchItemprop && matchItemprop[1]) {
+      const sec = parseISO8601Duration(matchItemprop[1]);
+      if (sec > 0) return sec;
+    }
+
+    // 3. og:video:duration meta tags
+    const ogDurationMatch = html.match(/<meta\s+property=["'](?:og:)?video:duration["']\s+content=["']([^"']+)["']/i) ||
+                            html.match(/<meta\s+content=["']([^"']+)["']\s+property=["'](?:og:)?video:duration["']/i) ||
+                            html.match(/<meta\s+name=["']twitter:player:duration["']\s+content=["']([^"']+)["']/i) ||
+                            html.match(/<meta\s+content=["']([^"']+)["']\s+name=["']twitter:player:duration["']/i);
+    if (ogDurationMatch && ogDurationMatch[1]) {
+      const sec = parseFloat(ogDurationMatch[1]);
+      if (!isNaN(sec) && sec > 0) return Math.round(sec);
+    }
+
+    // 4. approxDurationMs or durationMs
+    const approxDurationMatch = html.match(/"approxDurationMs"\s*:\s*"(\d+)"/i) ||
+                                html.match(/"durationMs"\s*:\s*(\d+)/i) ||
+                                html.match(/"duration"\s*:\s*(\d+)/i);
+    if (approxDurationMatch && approxDurationMatch[1]) {
+      const val = parseInt(approxDurationMatch[1], 10);
+      if (val > 0) {
+        return val > 100000 ? Math.round(val / 1000) : val;
+      }
+    }
+  } catch (err) {
+    console.warn('Error parsing duration from HTML:', err.message);
+  }
+  return 0;
+}
+
 // Helper: Scrape Open Graph metadata for TikTok/Instagram/Pinterest
 async function scrapeOpenGraphMetadata(url, platform) {
   try {
@@ -373,12 +423,14 @@ async function scrapeOpenGraphMetadata(url, platform) {
     const thumbnail = ogImageMatch ? ogImageMatch[1] : '';
     const description = ogDescMatch ? ogDescMatch[1] : '';
 
+    const durationSec = parseDurationFromHtml(html);
+
     return {
       title: title.replace(/&amp;/g, '&').replace(/&lt;/g, '<').replace(/&gt;/g, '>').replace(/&quot;/g, '"'),
       thumbnail,
       description: description.replace(/&amp;/g, '&').replace(/&lt;/g, '<').replace(/&gt;/g, '>').replace(/&quot;/g, '"'),
-      duration: 'Unknown',
-      duration_raw: 0,
+      duration: durationSec > 0 ? formatDuration(durationSec) : 'Unknown',
+      duration_raw: durationSec,
       platform,
       maxHeight: 720,
       originalUrl: url,
@@ -531,8 +583,8 @@ function parseISO8601Duration(durationStr) {
   return hours * 3600 + minutes * 60 + seconds;
 }
 
-// Scrape duration from YouTube video page
-async function scrapeYouTubeDuration(url) {
+// Helper: Scrape all metadata (duration, description, tags) from YouTube HTML watch page
+async function scrapeYouTubePageMetadata(url) {
   try {
     const response = await fetch(url, {
       headers: {
@@ -540,50 +592,59 @@ async function scrapeYouTubeDuration(url) {
       },
       signal: AbortSignal.timeout(3000)
     });
-    if (!response.ok) return 0;
+    if (!response.ok) return null;
     const html = await response.text();
     
-    // Fallback 1: itemprop="duration"
-    const match1 = html.match(/itemprop="duration" content="([^"]+)"/);
-    if (match1 && match1[1]) {
-      const sec = parseISO8601Duration(match1[1]);
-      if (sec > 0) return sec;
+    const durationSec = parseDurationFromHtml(html);
+    
+    const descMatch = html.match(/<meta\s+name=["']description["']\s+content=["']([^"']+)["']/i) ||
+                      html.match(/<meta\s+property=["']og:description["']\s+content=["']([^"']+)["']/i);
+    const description = descMatch ? descMatch[1] : '';
+    
+    const keywordsMatch = html.match(/<meta\s+name=["']keywords["']\s+content=["']([^"']+)["']/i);
+    let tags = [];
+    if (keywordsMatch && keywordsMatch[1]) {
+      tags = keywordsMatch[1].split(',').map(t => t.trim()).filter(Boolean);
     }
     
-    // Fallback 2: approxDurationMs
-    const match2 = html.match(/"approxDurationMs":"(\d+)"/);
-    if (match2 && match2[1]) {
-      const ms = parseInt(match2[1], 10);
-      if (ms > 0) return Math.round(ms / 1000);
-    }
+    return {
+      durationSec,
+      description: description.replace(/&amp;/g, '&').replace(/&lt;/g, '<').replace(/&gt;/g, '>').replace(/&quot;/g, '"'),
+      tags
+    };
   } catch (err) {
-    console.warn('Failed to scrape YouTube duration from HTML:', err.message);
+    console.warn('Failed to scrape YouTube page metadata:', err.message);
+    return null;
   }
-  return 0;
 }
 
 // Helper: Fetch YouTube metadata using oEmbed (bypasses blocks/rate-limits on Vercel)
 async function getYouTubeOEmbed(url) {
   const oEmbedUrl = `https://www.youtube.com/oembed?url=${encodeURIComponent(url)}&format=json`;
-  const response = await fetch(oEmbedUrl);
-  if (!response.ok) {
-    throw new Error(`oEmbed failed with status ${response.status}`);
-  }
-  const data = await response.json();
   
-  // Try to scrape duration from watch page
-  const durationSec = await scrapeYouTubeDuration(url);
+  const [oEmbedRes, pageMeta] = await Promise.all([
+    fetch(oEmbedUrl).then(r => r.ok ? r.json() : null).catch(() => null),
+    scrapeYouTubePageMetadata(url).catch(() => null)
+  ]);
+  
+  if (!oEmbedRes) {
+    throw new Error(`oEmbed failed to fetch`);
+  }
+  
+  const durationSec = pageMeta ? pageMeta.durationSec : 0;
+  const description = (pageMeta && pageMeta.description) || `Uploaded by ${oEmbedRes.author_name || 'unknown'}.`;
+  const tags = (pageMeta && pageMeta.tags) || [];
   
   return {
-    title: data.title || 'YouTube Video',
+    title: oEmbedRes.title || 'YouTube Video',
     duration: durationSec > 0 ? formatDuration(durationSec) : 'Unknown',
     duration_raw: durationSec,
-    thumbnail: data.thumbnail_url || '',
+    thumbnail: oEmbedRes.thumbnail_url || '',
     platform: 'youtube',
     maxHeight: 1080,
     originalUrl: url,
-    description: `Uploaded by ${data.author_name || 'unknown'}. (Metadata retrieved via oEmbed)`,
-    tags: []
+    description,
+    tags
   };
 }
 
@@ -614,140 +675,147 @@ app.get('/api/info', async (req, res) => {
   const isYouTube = url.includes('youtube.com') || url.includes('youtu.be');
   if (isYouTube) {
     try {
-      console.log(`Using youtubei.js to fetch YouTube info for: ${url}`);
-      const videoId = getYouTubeID(url);
-      if (!videoId) {
-        throw new Error('Could not parse YouTube video ID.');
-      }
-      const yt = await getYoutubeClient();
-      
-      let videoInfo = null;
-      let lastErr = null;
-      const clientsToTry = ['WEB', 'ANDROID', 'TV', 'MWEB'];
-      
-      for (const clientName of clientsToTry) {
-        try {
-          console.log(`Trying youtubei.js client: ${clientName}`);
-          videoInfo = await yt.getInfo(videoId, { client: clientName });
-          if (videoInfo && videoInfo.streaming_data) {
-            console.log(`Successfully fetched videoInfo using client: ${clientName}`);
-            break;
-          }
-        } catch (e) {
-          console.warn(`youtubei.js client ${clientName} failed:`, e.message);
-          lastErr = e;
-        }
-      }
-      
-      if (!videoInfo || !videoInfo.basic_info || !videoInfo.basic_info.title || videoInfo.basic_info.title.toLowerCase() === 'youtube video' || !videoInfo.basic_info.duration) {
-        throw new Error('youtubei.js returned empty or blocked metadata.');
-      }
-      
-      const formats = videoInfo.streaming_data?.formats || [];
-      const adaptive = videoInfo.streaming_data?.adaptive_formats || [];
-      const allFormats = [...formats, ...adaptive];
-      const heights = allFormats.map(f => f.height || 0);
-      const maxHeight = Math.max(...heights, 0);
-
-      // Find best thumbnail
-      const thumbnails = videoInfo.basic_info.thumbnail || [];
-      const bestThumbnail = thumbnails.length > 0 ? thumbnails[thumbnails.length - 1].url : '';
-      
-      // Fallback title extraction
-      let titleVal = videoInfo.basic_info.title;
-      if (!titleVal && videoInfo.page && videoInfo.page[0]) {
-        try {
-          titleVal = videoInfo.page[0].videoDetails?.title;
-        } catch (e) {}
-      }
-      if (!titleVal) titleVal = 'YouTube Video';
-
-      const info = {
-        title: titleVal,
-        duration: formatDuration(videoInfo.basic_info.duration || 0),
-        duration_raw: videoInfo.basic_info.duration || 0,
-        thumbnail: bestThumbnail,
-        platform: 'youtube',
-        maxHeight,
-        originalUrl: url,
-        description: videoInfo.basic_info.short_description || '',
-        tags: videoInfo.basic_info.keywords || []
-      };
-
+      console.log(`Trying fast YouTube oEmbed + HTML metadata extraction first for: ${url}`);
+      const info = await getYouTubeOEmbed(url);
       return res.json(info);
-    } catch (ytErr) {
-      console.warn(`youtubei.js failed to fetch info, trying @distube/ytdl-core fallback:`, ytErr.message);
+    } catch (fastErr) {
+      console.warn(`Fast YouTube oEmbed failed, falling back to heavy extractors:`, fastErr.message);
       try {
-        const data = await ytdl.getInfo(url);
-        if (!data || !data.videoDetails || !data.videoDetails.title || data.videoDetails.title.toLowerCase() === 'youtube video' || !data.videoDetails.lengthSeconds || parseInt(data.videoDetails.lengthSeconds) === 0) {
-          throw new Error('ytdl-core returned empty or blocked metadata.');
+        console.log(`Using youtubei.js to fetch YouTube info for: ${url}`);
+        const videoId = getYouTubeID(url);
+        if (!videoId) {
+          throw new Error('Could not parse YouTube video ID.');
         }
-
-        const formats = data.formats || [];
-        const heights = formats.map(f => f.height || 0);
+        const yt = await getYoutubeClient();
+        
+        let videoInfo = null;
+        let lastErr = null;
+        const clientsToTry = ['WEB', 'ANDROID', 'TV', 'MWEB'];
+        
+        for (const clientName of clientsToTry) {
+          try {
+            console.log(`Trying youtubei.js client: ${clientName}`);
+            videoInfo = await yt.getInfo(videoId, { client: clientName });
+            if (videoInfo && videoInfo.streaming_data) {
+              console.log(`Successfully fetched videoInfo using client: ${clientName}`);
+              break;
+            }
+          } catch (e) {
+            console.warn(`youtubei.js client ${clientName} failed:`, e.message);
+            lastErr = e;
+          }
+        }
+        
+        if (!videoInfo || !videoInfo.basic_info || !videoInfo.basic_info.title || videoInfo.basic_info.title.toLowerCase() === 'youtube video' || !videoInfo.basic_info.duration) {
+          throw new Error('youtubei.js returned empty or blocked metadata.');
+        }
+        
+        const formats = videoInfo.streaming_data?.formats || [];
+        const adaptive = videoInfo.streaming_data?.adaptive_formats || [];
+        const allFormats = [...formats, ...adaptive];
+        const heights = allFormats.map(f => f.height || 0);
         const maxHeight = Math.max(...heights, 0);
 
-        const thumbnails = data.videoDetails.thumbnails || [];
+        // Find best thumbnail
+        const thumbnails = videoInfo.basic_info.thumbnail || [];
         const bestThumbnail = thumbnails.length > 0 ? thumbnails[thumbnails.length - 1].url : '';
+        
+        // Fallback title extraction
+        let titleVal = videoInfo.basic_info.title;
+        if (!titleVal && videoInfo.page && videoInfo.page[0]) {
+          try {
+            titleVal = videoInfo.page[0].videoDetails?.title;
+          } catch (e) {}
+        }
+        if (!titleVal) titleVal = 'YouTube Video';
 
         const info = {
-          title: data.videoDetails.title || 'YouTube Video',
-          duration: formatDuration(parseInt(data.videoDetails.lengthSeconds) || 0),
-          duration_raw: parseInt(data.videoDetails.lengthSeconds) || 0,
+          title: titleVal,
+          duration: formatDuration(videoInfo.basic_info.duration || 0),
+          duration_raw: videoInfo.basic_info.duration || 0,
           thumbnail: bestThumbnail,
           platform: 'youtube',
           maxHeight,
           originalUrl: url,
-          description: data.videoDetails.description || '',
-          tags: data.videoDetails.keywords || []
+          description: videoInfo.basic_info.short_description || '',
+          tags: videoInfo.basic_info.keywords || []
         };
 
         return res.json(info);
-      } catch (ytdlErr) {
-        console.warn(`@distube/ytdl-core failed, trying Invidious fallback first for duration metadata:`, ytdlErr.message);
+      } catch (ytErr) {
+        console.warn(`youtubei.js failed to fetch info, trying @distube/ytdl-core fallback:`, ytErr.message);
         try {
-          const videoId = getYouTubeID(url);
-          const invidiousData = await fetchInvidiousVideoInfo(videoId);
-          
-          if (!invidiousData || !invidiousData.title || invidiousData.title.toLowerCase() === 'youtube video' || !invidiousData.lengthSeconds || parseInt(invidiousData.lengthSeconds) === 0) {
-            throw new Error('Invidious returned empty or blocked metadata.');
+          const data = await ytdl.getInfo(url);
+          if (!data || !data.videoDetails || !data.videoDetails.title || data.videoDetails.title.toLowerCase() === 'youtube video' || !data.videoDetails.lengthSeconds || parseInt(data.videoDetails.lengthSeconds) === 0) {
+            throw new Error('ytdl-core returned empty or blocked metadata.');
           }
 
+          const formats = data.formats || [];
+          const heights = formats.map(f => f.height || 0);
+          const maxHeight = Math.max(...heights, 0);
+
+          const thumbnails = data.videoDetails.thumbnails || [];
+          const bestThumbnail = thumbnails.length > 0 ? thumbnails[thumbnails.length - 1].url : '';
+
           const info = {
-            title: invidiousData.title || 'YouTube Video',
-            duration: formatDuration(invidiousData.lengthSeconds || 0),
-            duration_raw: invidiousData.lengthSeconds || 0,
-            thumbnail: invidiousData.videoThumbnails && invidiousData.videoThumbnails.length > 0 ? invidiousData.videoThumbnails[invidiousData.videoThumbnails.length - 1].url : '',
+            title: data.videoDetails.title || 'YouTube Video',
+            duration: formatDuration(parseInt(data.videoDetails.lengthSeconds) || 0),
+            duration_raw: parseInt(data.videoDetails.lengthSeconds) || 0,
+            thumbnail: bestThumbnail,
             platform: 'youtube',
-            maxHeight: 720,
+            maxHeight,
             originalUrl: url,
-            description: invidiousData.description || '',
-            tags: invidiousData.keywords || []
+            description: data.videoDetails.description || '',
+            tags: data.videoDetails.keywords || []
           };
+
           return res.json(info);
-        } catch (invErr) {
-          console.warn(`Invidious metadata fetch failed, falling back to YouTube oEmbed:`, invErr.message);
+        } catch (ytdlErr) {
+          console.warn(`@distube/ytdl-core failed, trying Invidious fallback first for duration metadata:`, ytdlErr.message);
           try {
-            const info = await getYouTubeOEmbed(url);
+            const videoId = getYouTubeID(url);
+            const invidiousData = await fetchInvidiousVideoInfo(videoId);
+            
+            if (!invidiousData || !invidiousData.title || invidiousData.title.toLowerCase() === 'youtube video' || !invidiousData.lengthSeconds || parseInt(invidiousData.lengthSeconds) === 0) {
+              throw new Error('Invidious returned empty or blocked metadata.');
+            }
+
+            const info = {
+              title: invidiousData.title || 'YouTube Video',
+              duration: formatDuration(invidiousData.lengthSeconds || 0),
+              duration_raw: invidiousData.lengthSeconds || 0,
+              thumbnail: invidiousData.videoThumbnails && invidiousData.videoThumbnails.length > 0 ? invidiousData.videoThumbnails[invidiousData.videoThumbnails.length - 1].url : '',
+              platform: 'youtube',
+              maxHeight: 720,
+              originalUrl: url,
+              description: invidiousData.description || '',
+              tags: invidiousData.keywords || []
+            };
             return res.json(info);
-          } catch (oEmbedErr) {
-            console.warn(`YouTube oEmbed failed, falling back to Open Graph scraping:`, oEmbedErr.message);
+          } catch (invErr) {
+            console.warn(`Invidious metadata fetch failed, falling back to YouTube oEmbed:`, invErr.message);
             try {
-              const info = await scrapeOpenGraphMetadata(url, 'youtube');
+              const info = await getYouTubeOEmbed(url);
               return res.json(info);
-            } catch (ogErr) {
-              console.warn(`All metadata scrapers failed, using generic fallback:`, ogErr.message);
-              return res.json({
-                title: 'YouTube Video',
-                duration: 'Unknown',
-                duration_raw: 0,
-                thumbnail: '',
-                platform: 'youtube',
-                maxHeight: 720,
-                originalUrl: url,
-                description: 'Uploaded on YouTube. (Generic fallback)',
-                tags: []
-              });
+            } catch (oEmbedErr) {
+              console.warn(`YouTube oEmbed failed, falling back to Open Graph scraping:`, oEmbedErr.message);
+              try {
+                const info = await scrapeOpenGraphMetadata(url, 'youtube');
+                return res.json(info);
+              } catch (ogErr) {
+                console.warn(`All metadata scrapers failed, using generic fallback:`, ogErr.message);
+                return res.json({
+                  title: 'YouTube Video',
+                  duration: 'Unknown',
+                  duration_raw: 0,
+                  thumbnail: '',
+                  platform: 'youtube',
+                  maxHeight: 720,
+                  originalUrl: url,
+                  description: 'Uploaded on YouTube. (Generic fallback)',
+                  tags: []
+                });
+              }
             }
           }
         }
@@ -1008,7 +1076,7 @@ app.post('/api/download', async (req, res) => {
         }
 
         const fileExt = quality === 'audio' ? 'mp3' : 'mp4';
-        const fileName = `[Any Download] - ${title.replace(/[\\/:*?"<>|]/g, '_')}.${fileExt}`;
+        const fileName = `[Any Downloader] - ${title.replace(/[\\/:*?"<>|]/g, '_')}.${fileExt}`;
 
         return res.json({
           streamUrl: decipheredUrl,
@@ -1042,7 +1110,7 @@ app.post('/api/download', async (req, res) => {
           }
 
           const fileExt = quality === 'audio' ? 'mp3' : 'mp4';
-          const fileName = `[Any Download] - ${title.replace(/[\\/:*?"<>|]/g, '_')}.${fileExt}`;
+          const fileName = `[Any Downloader] - ${title.replace(/[\\/:*?"<>|]/g, '_')}.${fileExt}`;
 
           return res.json({
             streamUrl: format.url,
@@ -1055,7 +1123,7 @@ app.post('/api/download', async (req, res) => {
             const cobaltResult = await fetchFromCobalt(url, quality);
             
             const fileExt = quality === 'audio' ? 'mp3' : 'mp4';
-            const fileName = `[Any Download] - ${title.replace(/[\\/:*?"<>|]/g, '_')}.${fileExt}`;
+            const fileName = `[Any Downloader] - ${title.replace(/[\\/:*?"<>|]/g, '_')}.${fileExt}`;
 
             const cobaltSize = await getContentLength(cobaltResult.url);
             if (cobaltSize > 0) {
@@ -1082,7 +1150,7 @@ app.post('/api/download', async (req, res) => {
               }
 
               const fileExt = quality === 'audio' ? 'mp3' : 'mp4';
-              const fileName = `[Any Download] - ${title.replace(/[\\/:*?"<>|]/g, '_')}.${fileExt}`;
+              const fileName = `[Any Downloader] - ${title.replace(/[\\/:*?"<>|]/g, '_')}.${fileExt}`;
 
               return res.json({
                 streamUrl: format.url,
@@ -1102,7 +1170,7 @@ app.post('/api/download', async (req, res) => {
         const cobaltResult = await fetchFromCobalt(url, quality);
         
         const fileExt = quality === 'audio' ? 'mp3' : 'mp4';
-        const fileName = `[Any Download] - ${title.replace(/[\\/:*?"<>|]/g, '_')}.${fileExt}`;
+        const fileName = `[Any Downloader] - ${title.replace(/[\\/:*?"<>|]/g, '_')}.${fileExt}`;
 
         const cobaltSize = await getContentLength(cobaltResult.url);
         if (cobaltSize > 0) {
@@ -1190,7 +1258,7 @@ app.post('/api/download', async (req, res) => {
     eta: 'Unknown',
     size: 'Unknown',
     filePath: '',
-    fileName: `[Any Download] - ${title.replace(/[\\/:*?"<>|]/g, '_')}.${fileExt}`,
+    fileName: `[Any Downloader] - ${title.replace(/[\\/:*?"<>|]/g, '_')}.${fileExt}`,
     error: null,
     clients: [],
     proc: proc // Save reference for cancellation
