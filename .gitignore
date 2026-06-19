@@ -4,3 +4,5 @@ downloads/
 dist/
 .env
 .DS_Store
+*-player-script.js
+test.js

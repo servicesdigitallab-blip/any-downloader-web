@@ -5,6 +5,7 @@ import path from 'path';
 import fs from 'fs';
 import { fileURLToPath } from 'url';
 import crypto from 'crypto';
+import ytdl from '@distube/ytdl-core';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -95,7 +96,7 @@ app.get('/api/debug', (req, res) => {
 });
 
 // GET /api/info - Get video details
-app.get('/api/info', (req, res) => {
+app.get('/api/info', async (req, res) => {
   const { url } = req.query;
 
   if (!url) {
@@ -107,6 +108,37 @@ app.get('/api/info', (req, res) => {
   }
 
   console.log(`Fetching info for URL: ${url}`);
+
+  const isYouTube = url.includes('youtube.com') || url.includes('youtu.be');
+  if (isYouTube) {
+    try {
+      console.log(`Using @distube/ytdl-core to fetch YouTube info for: ${url}`);
+      const data = await ytdl.getInfo(url);
+      const formats = data.formats || [];
+      const heights = formats.map(f => f.height || 0);
+      const maxHeight = Math.max(...heights, 0);
+
+      // Find best thumbnail
+      const thumbnails = data.videoDetails.thumbnails || [];
+      const bestThumbnail = thumbnails.length > 0 ? thumbnails[thumbnails.length - 1].url : '';
+
+      const info = {
+        title: data.videoDetails.title || 'YouTube Video',
+        duration: formatDuration(parseInt(data.videoDetails.lengthSeconds) || 0),
+        duration_raw: parseInt(data.videoDetails.lengthSeconds) || 0,
+        thumbnail: bestThumbnail,
+        platform: 'youtube',
+        maxHeight,
+        originalUrl: url,
+        description: data.videoDetails.description || '',
+        tags: data.videoDetails.keywords || []
+      };
+
+      return res.json(info);
+    } catch (ytdlErr) {
+      console.warn(`@distube/ytdl-core failed, falling back to yt-dlp:`, ytdlErr.message);
+    }
+  }
 
   // Speed-optimized arguments: skip update check, skip SSL check, skip format verify, 5s timeout
   const args = [
