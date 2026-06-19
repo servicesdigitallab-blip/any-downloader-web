@@ -139,27 +139,20 @@ app.get('/api/debug', (req, res) => {
   }
 });
 
-// GET /api/config - Get server environment config
-app.get('/api/config', (req, res) => {
-  res.json({
-    isVercel: process.env.VERCEL === '1' || !!process.env.VERCEL
-  });
-});
-
 // Helper: Resolve download via community Cobalt API v10 with dynamic scanning
 async function getCobaltInstances() {
   const staticInstances = [
-    'https://api.cobalt.blackcat.sweeux.org',
     'https://rue-cobalt.xenon.zone',
+    'https://fox.kittycat.boo',
+    'https://api.cobalt.blackcat.sweeux.org',
     'https://dog.kittycat.boo',
     'https://cobaltapi.kittycat.boo',
-    'https://fox.kittycat.boo',
     'https://cobaltapi.cjs.nz',
+    'https://api.dl.woof.monster',
     'https://sunny.imput.net',
     'https://kityune.imput.net',
     'https://nachos.imput.net',
     'https://blossom.imput.net',
-    'https://api.dl.woof.monster',
     'https://subito-c.meowing.de'
   ];
 
@@ -173,15 +166,51 @@ async function getCobaltInstances() {
     });
     if (res.ok) {
       const html = await res.text();
-      const regex = /(apiHost|api):"([^"]+)"/g;
-      let match;
+      const arraysToParse = ['official', 'community'];
       const scraped = [];
-      while ((match = regex.exec(html)) !== null) {
-        const host = match[2];
-        if (host && !host.includes('localhost') && host.includes('.')) {
-          scraped.push(`https://${host}`);
+      
+      for (const arrName of arraysToParse) {
+        const regex = new RegExp(`${arrName}\\s*:\\s*\\[`, 'g');
+        const match = regex.exec(html);
+        if (!match) continue;
+        
+        const startIdx = match.index;
+        const startOffset = match[0].length;
+        
+        let bracketCount = 1;
+        let currentIdx = startIdx + startOffset;
+        let arrayContent = '[';
+        
+        while (bracketCount > 0 && currentIdx < html.length) {
+          const char = html[currentIdx];
+          arrayContent += char;
+          if (char === '[') bracketCount++;
+          else if (char === ']') bracketCount--;
+          currentIdx++;
+        }
+        
+        try {
+          const fn = new Function(`return ${arrayContent};`);
+          const list = fn() || [];
+          for (const inst of list) {
+            if (inst.api && inst.online !== false) {
+              const youtubeTest = inst.tests && inst.tests.youtube;
+              const isYtWorking = youtubeTest && youtubeTest.status === true;
+              
+              // Skip known private instances that require JWT or have auth/key/jwt messages
+              const message = youtubeTest && youtubeTest.message;
+              const requiresJwt = message && (message.includes('jwt') || message.includes('auth') || message.includes('key'));
+              
+              if (isYtWorking && !requiresJwt) {
+                scraped.push(`https://${inst.api}`);
+              }
+            }
+          }
+        } catch (e) {
+          console.warn(`Failed to parse ${arrName} array:`, e.message);
         }
       }
+      
       if (scraped.length > 0) {
         const combined = [...new Set([...staticInstances, ...scraped])];
         console.log(`Successfully retrieved ${scraped.length} dynamic Cobalt instances. Total pool: ${combined.length}`);
@@ -492,6 +521,47 @@ function getCleanError(stderrData, defaultMsg) {
   return cleanError;
 }
 
+// Parse ISO 8601 duration format (PT#H#M#S) into seconds
+function parseISO8601Duration(durationStr) {
+  const matches = durationStr.match(/PT(?:(\d+)H)?(?:(\d+)M)?(?:(\d+)S)?/);
+  if (!matches) return 0;
+  const hours = parseInt(matches[1], 10) || 0;
+  const minutes = parseInt(matches[2], 10) || 0;
+  const seconds = parseInt(matches[3], 10) || 0;
+  return hours * 3600 + minutes * 60 + seconds;
+}
+
+// Scrape duration from YouTube video page
+async function scrapeYouTubeDuration(url) {
+  try {
+    const response = await fetch(url, {
+      headers: {
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36'
+      },
+      signal: AbortSignal.timeout(3000)
+    });
+    if (!response.ok) return 0;
+    const html = await response.text();
+    
+    // Fallback 1: itemprop="duration"
+    const match1 = html.match(/itemprop="duration" content="([^"]+)"/);
+    if (match1 && match1[1]) {
+      const sec = parseISO8601Duration(match1[1]);
+      if (sec > 0) return sec;
+    }
+    
+    // Fallback 2: approxDurationMs
+    const match2 = html.match(/"approxDurationMs":"(\d+)"/);
+    if (match2 && match2[1]) {
+      const ms = parseInt(match2[1], 10);
+      if (ms > 0) return Math.round(ms / 1000);
+    }
+  } catch (err) {
+    console.warn('Failed to scrape YouTube duration from HTML:', err.message);
+  }
+  return 0;
+}
+
 // Helper: Fetch YouTube metadata using oEmbed (bypasses blocks/rate-limits on Vercel)
 async function getYouTubeOEmbed(url) {
   const oEmbedUrl = `https://www.youtube.com/oembed?url=${encodeURIComponent(url)}&format=json`;
@@ -500,10 +570,14 @@ async function getYouTubeOEmbed(url) {
     throw new Error(`oEmbed failed with status ${response.status}`);
   }
   const data = await response.json();
+  
+  // Try to scrape duration from watch page
+  const durationSec = await scrapeYouTubeDuration(url);
+  
   return {
     title: data.title || 'YouTube Video',
-    duration: 'Unknown',
-    duration_raw: 0,
+    duration: durationSec > 0 ? formatDuration(durationSec) : 'Unknown',
+    duration_raw: durationSec,
     thumbnail: data.thumbnail_url || '',
     platform: 'youtube',
     maxHeight: 1080,
