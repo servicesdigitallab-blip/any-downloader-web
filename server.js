@@ -127,9 +127,12 @@ app.get('/api/info', (req, res) => {
       console.error(`yt-dlp info failed with code ${code}. Error: ${stderrData}`);
       let cleanError = 'Failed to fetch video details. Verify the link and try again.';
       if (stderrData) {
-        const errorLine = stderrData.split('\n').find(line => line.includes('ERROR:'));
+        const lines = stderrData.split('\n').map(l => l.trim()).filter(Boolean);
+        const errorLine = lines.find(line => line.toLowerCase().includes('error'));
         if (errorLine) {
-          cleanError = errorLine.replace('ERROR:', '').trim();
+          cleanError = errorLine;
+        } else if (lines.length > 0) {
+          cleanError = lines[lines.length - 1];
         }
       }
       return res.status(500).json({ error: cleanError });
