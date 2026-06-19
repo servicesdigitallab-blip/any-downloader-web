@@ -122,7 +122,14 @@ app.get('/api/info', (req, res) => {
 
     if (code !== 0) {
       console.error(`yt-dlp info failed with code ${code}. Error: ${stderrData}`);
-      return res.status(500).json({ error: 'Failed to fetch video details. Verify the link and try again.' });
+      let cleanError = 'Failed to fetch video details. Verify the link and try again.';
+      if (stderrData) {
+        const errorLine = stderrData.split('\n').find(line => line.includes('ERROR:'));
+        if (errorLine) {
+          cleanError = errorLine.replace('ERROR:', '').trim();
+        }
+      }
+      return res.status(500).json({ error: cleanError });
     }
 
     try {
@@ -278,15 +285,25 @@ app.post('/api/download', (req, res) => {
     }
   });
 
+  let stderrData = '';
   proc.stderr.on('data', (data) => {
-    console.warn(`[Job ${jobId} stderr]: ${data.toString()}`);
+    const chunk = data.toString();
+    stderrData += chunk;
+    console.warn(`[Job ${jobId} stderr]: ${chunk}`);
   });
 
   proc.on('close', (code) => {
     // If the process was terminated (e.g., SIGKILL on cancellation), code might be null or non-zero
     if (code !== 0 && job.status !== 'error') {
-      console.error(`Job ${jobId} failed or closed with code ${code}`);
-      updateJob({ status: 'error', error: 'Download failed. The stream quality may not be available or was restricted.' });
+      console.error(`Job ${jobId} failed or closed with code ${code}. Error: ${stderrData}`);
+      let cleanError = 'Download failed. The stream quality may not be available or was restricted.';
+      if (stderrData) {
+        const errorLine = stderrData.split('\n').find(line => line.includes('ERROR:'));
+        if (errorLine) {
+          cleanError = errorLine.replace('ERROR:', '').trim();
+        }
+      }
+      updateJob({ status: 'error', error: cleanError });
       return;
     }
 
