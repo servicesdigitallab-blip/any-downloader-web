@@ -429,7 +429,22 @@ function App() {
         setTimeout(() => URL.revokeObjectURL(localDownloadUrl), 10000);
         clientDownloadSuccess = true;
       } catch (streamErr) {
-        console.warn('Direct client-side stream download failed, falling back to server-side extractors:', streamErr.message);
+        console.warn('Direct client-side stream download failed, falling back to native browser redirect:', streamErr.message);
+        
+        // Native browser download fallback (bypasses CORS)
+        setDownloadStatus('completed');
+        setDownloadProgress(100);
+        
+        const finalFileName = `[Any Download] - ${cobaltFileName.replace(/^\[.*?\]\s*-\s*/, '')}`;
+        const downloadLink = document.createElement('a');
+        downloadLink.href = cobaltStreamUrl;
+        downloadLink.setAttribute('download', finalFileName);
+        downloadLink.setAttribute('target', '_blank');
+        document.body.appendChild(downloadLink);
+        downloadLink.click();
+        downloadLink.remove();
+        
+        clientDownloadSuccess = true;
       }
     }
 
