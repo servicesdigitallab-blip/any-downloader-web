@@ -96,7 +96,8 @@ app.get('/api/debug', (req, res) => {
 });
 
 // Public Invidious instances to fetch unblocked YouTube metadata and streams
-const INVIDIOUS_INSTANCES = [
+// Public Invidious instances fallback list (used if dynamic fetch fails)
+const FALLBACK_INVIDIOUS_INSTANCES = [
   'https://invidious.nerdvpn.de',
   'https://invidious.flokinet.to',
   'https://invidious.io.lol',
@@ -106,11 +107,45 @@ const INVIDIOUS_INSTANCES = [
 ];
 
 async function fetchInvidiousVideoInfo(videoId) {
-  for (const instance of INVIDIOUS_INSTANCES) {
+  let instances = [];
+  try {
+    console.log('Fetching active Invidious instances dynamically from api.invidious.io...');
+    const response = await fetch('https://api.invidious.io/instances.json?sort_by=type,health', {
+      headers: {
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36'
+      }
+    });
+    if (response.ok) {
+      const data = await response.json();
+      instances = data
+        .filter(item => {
+          const info = item[1];
+          return info && info.type === 'https' && info.api === true && (info.health === undefined || parseFloat(info.health) > 90);
+        })
+        .map(item => item[1].uri || `https://${item[0]}`);
+      console.log(`Successfully retrieved ${instances.length} healthy Invidious instances.`);
+    }
+  } catch (err) {
+    console.warn('Failed to fetch dynamic Invidious instances, using fallback list:', err.message);
+  }
+
+  if (!instances || instances.length === 0) {
+    instances = FALLBACK_INVIDIOUS_INSTANCES;
+  }
+
+  // Limit to top 8 healthiest instances to prevent long timeouts
+  const targetInstances = instances.slice(0, 8);
+
+  for (const instance of targetInstances) {
     try {
       console.log(`Trying Invidious instance: ${instance} for video: ${videoId}`);
-      // Request with local=true to get proxied stream links that bypass YouTube blocks
-      const response = await fetch(`${instance}/api/v1/videos/${videoId}?local=true`);
+      // Request with local=true to get proxied stream links, adding User-Agent to bypass Cloudflare
+      const response = await fetch(`${instance}/api/v1/videos/${videoId}?local=true`, {
+        headers: {
+          'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36',
+          'Accept': 'application/json'
+        }
+      });
       if (response.ok) {
         const data = await response.json();
         if (data && (data.formatStreams || data.adaptiveFormats)) {
@@ -134,7 +169,7 @@ async function fetchInvidiousVideoInfo(videoId) {
       console.warn(`Invidious instance ${instance} failed:`, err.message);
     }
   }
-  throw new Error('All public Invidious instances failed to resolve video info.');
+  throw new Error('All public Invidious instances failed to resolve video info. Please try again in a few moments.');
 }
 
 function getInvidiousFormat(invidiousData, quality) {
