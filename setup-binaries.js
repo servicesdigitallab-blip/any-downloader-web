@@ -12,6 +12,7 @@ const __dirname = path.dirname(__filename);
 
 const BIN_DIR = path.join(__dirname, 'bin');
 const isWin = process.platform === 'win32';
+const isVercel = process.env.VERCEL === '1' || !!process.env.VERCEL;
 
 const YTDLP_PATH = path.join(BIN_DIR, isWin ? 'yt-dlp.exe' : 'yt-dlp');
 const FFMPEG_PATH = path.join(BIN_DIR, isWin ? 'ffmpeg.exe' : 'ffmpeg');
@@ -94,6 +95,12 @@ async function setup() {
       console.log('✔ yt-dlp downloaded successfully.');
     } else {
       console.log('✔ yt-dlp is already present.');
+    }
+
+    if (isVercel) {
+      console.log('✔ Running on Vercel: Skipping ffmpeg and ffprobe download (not required for metadata info).');
+      console.log('🎉 Setup completed successfully!');
+      process.exit(0);
     }
 
     if (!hasFfmpeg) {
