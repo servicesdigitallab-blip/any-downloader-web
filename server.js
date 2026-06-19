@@ -255,6 +255,59 @@ async function fetchFromCobalt(videoUrl, quality) {
   throw new Error('All community Cobalt instances failed to process this video.');
 }
 
+// Helper: Get content length of a URL (supporting HEAD and GET with Range fallback)
+async function getContentLength(streamUrl) {
+  try {
+    const response = await fetch(streamUrl, {
+      method: 'HEAD',
+      headers: {
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36'
+      },
+      redirect: 'follow',
+      signal: AbortSignal.timeout(3000)
+    });
+    if (response.ok) {
+      const len = parseInt(response.headers.get('content-length'), 10);
+      if (len && !isNaN(len) && len > 0) {
+        return len;
+      }
+    }
+  } catch (err) {
+    console.warn(`HEAD request failed for content-length: ${err.message}. Trying GET with Range header...`);
+  }
+
+  try {
+    const response = await fetch(streamUrl, {
+      method: 'GET',
+      headers: {
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36',
+        'Range': 'bytes=0-0'
+      },
+      redirect: 'follow',
+      signal: AbortSignal.timeout(3000)
+    });
+    if (response.ok || response.status === 206) {
+      const contentRange = response.headers.get('content-range');
+      if (contentRange) {
+        const parts = contentRange.split('/');
+        if (parts.length > 1) {
+          const totalSize = parseInt(parts[1], 10);
+          if (totalSize && !isNaN(totalSize) && totalSize > 0) {
+            return totalSize;
+          }
+        }
+      }
+      const len = parseInt(response.headers.get('content-length'), 10);
+      if (len && !isNaN(len) && len > 0) {
+        return len;
+      }
+    }
+  } catch (err) {
+    console.warn(`GET Range request failed for content-length: ${err.message}`);
+  }
+  return 0;
+}
+
 // Helper: Scrape Open Graph metadata for TikTok/Instagram/Pinterest
 async function scrapeOpenGraphMetadata(url, platform) {
   try {
@@ -923,6 +976,15 @@ app.post('/api/download', async (req, res) => {
             const fileExt = quality === 'audio' ? 'mp3' : 'mp4';
             const fileName = `[Any Download] - ${title.replace(/[\\/:*?"<>|]/g, '_')}.${fileExt}`;
 
+            const cobaltSize = await getContentLength(cobaltResult.url);
+            if (cobaltSize > 0) {
+              return res.json({
+                streamUrl: cobaltResult.url,
+                totalSize: cobaltSize,
+                fileName
+              });
+            }
+
             return res.json({
               streamUrl: cobaltResult.url,
               direct: true,
@@ -960,6 +1022,15 @@ app.post('/api/download', async (req, res) => {
         
         const fileExt = quality === 'audio' ? 'mp3' : 'mp4';
         const fileName = `[Any Download] - ${title.replace(/[\\/:*?"<>|]/g, '_')}.${fileExt}`;
+
+        const cobaltSize = await getContentLength(cobaltResult.url);
+        if (cobaltSize > 0) {
+          return res.json({
+            streamUrl: cobaltResult.url,
+            totalSize: cobaltSize,
+            fileName
+          });
+        }
 
         return res.json({
           streamUrl: cobaltResult.url,

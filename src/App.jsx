@@ -393,6 +393,10 @@ function App() {
           }
         }
 
+        if (receivedLength === 0) {
+          throw new Error('Downloaded 0 bytes from stream.');
+        }
+
         setDownloadStatus('completed');
         setDownloadProgress(100);
 
@@ -499,6 +503,10 @@ function App() {
               } else {
                 setDownloadSpeed(`${(receivedLength / (1024 * 1024)).toFixed(1)} MB downloaded`);
               }
+            }
+
+            if (receivedLength === 0) {
+              throw new Error('Downloaded 0 bytes from fallback stream.');
             }
 
             setDownloadStatus('completed');
