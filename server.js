@@ -95,6 +95,78 @@ app.get('/api/debug', (req, res) => {
   }
 });
 
+// Public Invidious instances to fetch unblocked YouTube metadata and streams
+const INVIDIOUS_INSTANCES = [
+  'https://invidious.nerdvpn.de',
+  'https://invidious.flokinet.to',
+  'https://invidious.io.lol',
+  'https://yewtu.be',
+  'https://invidious.no-logs.com',
+  'https://inv.tux.im'
+];
+
+async function fetchInvidiousVideoInfo(videoId) {
+  for (const instance of INVIDIOUS_INSTANCES) {
+    try {
+      console.log(`Trying Invidious instance: ${instance} for video: ${videoId}`);
+      // Request with local=true to get proxied stream links that bypass YouTube blocks
+      const response = await fetch(`${instance}/api/v1/videos/${videoId}?local=true`);
+      if (response.ok) {
+        const data = await response.json();
+        if (data && (data.formatStreams || data.adaptiveFormats)) {
+          // Success! Inject the instance host to make sure absolute URLs are completed if they are relative
+          const streams = data.formatStreams || [];
+          streams.forEach(s => {
+            if (s.url && s.url.startsWith('/')) {
+              s.url = `${instance}${s.url}`;
+            }
+          });
+          const adaptive = data.adaptiveFormats || [];
+          adaptive.forEach(a => {
+            if (a.url && a.url.startsWith('/')) {
+              a.url = `${instance}${a.url}`;
+            }
+          });
+          return data;
+        }
+      }
+    } catch (err) {
+      console.warn(`Invidious instance ${instance} failed:`, err.message);
+    }
+  }
+  throw new Error('All public Invidious instances failed to resolve video info.');
+}
+
+function getInvidiousFormat(invidiousData, quality) {
+  if (quality === 'audio') {
+    const adaptive = invidiousData.adaptiveFormats || [];
+    const audioFormat = adaptive.find(f => f.type && f.type.startsWith('audio/'));
+    if (audioFormat) {
+      return {
+        url: audioFormat.url,
+        size: parseInt(audioFormat.size) || 0
+      };
+    }
+  } else {
+    const streams = invidiousData.formatStreams || [];
+    if (streams.length > 0) {
+      let matched = streams.find(s => s.qualityLabel === quality || s.quality === quality);
+      if (!matched && quality === '360p') {
+        matched = streams.find(s => s.quality === 'medium');
+      }
+      if (!matched && quality === '720p') {
+        matched = streams.find(s => s.quality === 'hd720');
+      }
+      const selected = matched || streams[0];
+      return {
+        url: selected.url,
+        size: parseInt(selected.size) || 0
+      };
+    }
+  }
+  return null;
+}
+
 // Helper: Clean up error messages and handle Vercel libcrypt/python dependency issues
 function getCleanError(stderrData, defaultMsg) {
   const hasDependencyError = stderrData && (
@@ -186,7 +258,26 @@ app.get('/api/info', async (req, res) => {
         const info = await getYouTubeOEmbed(url);
         return res.json(info);
       } catch (oEmbedErr) {
-        console.warn(`YouTube oEmbed failed, falling back to yt-dlp:`, oEmbedErr.message);
+        console.warn(`YouTube oEmbed failed, falling back to Invidious metadata:`, oEmbedErr.message);
+        try {
+          const videoId = ytdl.getVideoID(url);
+          const invidiousData = await fetchInvidiousVideoInfo(videoId);
+          
+          const info = {
+            title: invidiousData.title || 'YouTube Video',
+            duration: formatDuration(invidiousData.lengthSeconds || 0),
+            duration_raw: invidiousData.lengthSeconds || 0,
+            thumbnail: invidiousData.videoThumbnails && invidiousData.videoThumbnails.length > 0 ? invidiousData.videoThumbnails[invidiousData.videoThumbnails.length - 1].url : '',
+            platform: 'youtube',
+            maxHeight: 720,
+            originalUrl: url,
+            description: invidiousData.description || '',
+            tags: invidiousData.keywords || []
+          };
+          return res.json(info);
+        } catch (invErr) {
+          console.warn(`Invidious fallback failed, letting it fall back to yt-dlp:`, invErr.message);
+        }
       }
     }
   }
@@ -360,8 +451,27 @@ app.post('/api/download', async (req, res) => {
           fileName
         });
       } catch (err) {
-        console.error('Failed to resolve direct streaming info on Vercel:', err);
-        return res.status(500).json({ error: `Vercel download failed: ${err.message}` });
+        console.warn('ytdl.getInfo failed on Vercel, trying Invidious fallback:', err.message);
+        try {
+          const videoId = ytdl.getVideoID(url);
+          const invidiousData = await fetchInvidiousVideoInfo(videoId);
+          const format = getInvidiousFormat(invidiousData, quality);
+          if (!format || !format.url) {
+            throw new Error('No compatible YouTube download stream found on Invidious.');
+          }
+
+          const fileExt = quality === 'audio' ? 'mp3' : 'mp4';
+          const fileName = `[Any Downloader] - ${title.replace(/[\\/:*?"<>|]/g, '_')}.${fileExt}`;
+
+          return res.json({
+            streamUrl: format.url,
+            totalSize: format.size,
+            fileName
+          });
+        } catch (invErr) {
+          console.error('Failed to resolve direct streaming info on Vercel (both ytdl and Invidious failed):', invErr.message);
+          return res.status(500).json({ error: `Vercel download failed: ${invErr.message}` });
+        }
       }
     } else {
       return res.status(403).json({ 
