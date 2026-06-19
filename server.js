@@ -95,10 +95,16 @@ app.get('/api/debug', (req, res) => {
   }
 });
 
-// Helper: Clean up error messages and handle Vercel libcrypt dependency issue
+// Helper: Clean up error messages and handle Vercel libcrypt/python dependency issues
 function getCleanError(stderrData, defaultMsg) {
-  if (stderrData && stderrData.includes('libcrypt.so.1')) {
-    return 'Running yt-dlp failed due to missing system library (libcrypt.so.1) on Vercel. For full compatibility, please deploy to a persistent host like Railway, Render, or a VPS.';
+  const hasDependencyError = stderrData && (
+    stderrData.includes('libcrypt.so.1') || 
+    stderrData.includes('python3') || 
+    stderrData.includes('python') || 
+    stderrData.includes('No such file or directory')
+  );
+  if (hasDependencyError) {
+    return 'Running yt-dlp failed due to missing system library or runtime (python3 / libcrypt.so.1) on Vercel. For full compatibility, please deploy to a persistent host like Railway, Render, or a VPS.';
   }
   let cleanError = defaultMsg;
   if (stderrData) {
@@ -111,6 +117,27 @@ function getCleanError(stderrData, defaultMsg) {
     }
   }
   return cleanError;
+}
+
+// Helper: Fetch YouTube metadata using oEmbed (bypasses blocks/rate-limits on Vercel)
+async function getYouTubeOEmbed(url) {
+  const oEmbedUrl = `https://www.youtube.com/oembed?url=${encodeURIComponent(url)}&format=json`;
+  const response = await fetch(oEmbedUrl);
+  if (!response.ok) {
+    throw new Error(`oEmbed failed with status ${response.status}`);
+  }
+  const data = await response.json();
+  return {
+    title: data.title || 'YouTube Video',
+    duration: 'Unknown',
+    duration_raw: 0,
+    thumbnail: data.thumbnail_url || '',
+    platform: 'youtube',
+    maxHeight: 1080,
+    originalUrl: url,
+    description: `Uploaded by ${data.author_name || 'unknown'}. (Metadata retrieved via oEmbed)`,
+    tags: []
+  };
 }
 
 // GET /api/info - Get video details
@@ -154,7 +181,13 @@ app.get('/api/info', async (req, res) => {
 
       return res.json(info);
     } catch (ytdlErr) {
-      console.warn(`@distube/ytdl-core failed, falling back to yt-dlp:`, ytdlErr.message);
+      console.warn(`@distube/ytdl-core failed, falling back to YouTube oEmbed:`, ytdlErr.message);
+      try {
+        const info = await getYouTubeOEmbed(url);
+        return res.json(info);
+      } catch (oEmbedErr) {
+        console.warn(`YouTube oEmbed failed, falling back to yt-dlp:`, oEmbedErr.message);
+      }
     }
   }
 
