@@ -95,6 +95,24 @@ app.get('/api/debug', (req, res) => {
   }
 });
 
+// Helper: Clean up error messages and handle Vercel libcrypt dependency issue
+function getCleanError(stderrData, defaultMsg) {
+  if (stderrData && stderrData.includes('libcrypt.so.1')) {
+    return 'Running yt-dlp failed due to missing system library (libcrypt.so.1) on Vercel. For full compatibility, please deploy to a persistent host like Railway, Render, or a VPS.';
+  }
+  let cleanError = defaultMsg;
+  if (stderrData) {
+    const lines = stderrData.split('\n').map(l => l.trim()).filter(Boolean);
+    const errorLine = lines.find(line => line.toLowerCase().includes('error'));
+    if (errorLine) {
+      cleanError = errorLine;
+    } else if (lines.length > 0) {
+      cleanError = lines[lines.length - 1];
+    }
+  }
+  return cleanError;
+}
+
 // GET /api/info - Get video details
 app.get('/api/info', async (req, res) => {
   const { url } = req.query;
@@ -186,16 +204,7 @@ app.get('/api/info', async (req, res) => {
 
     if (code !== 0) {
       console.error(`yt-dlp info failed with code ${code}. Error: ${stderrData}`);
-      let cleanError = 'Failed to fetch video details. Verify the link and try again.';
-      if (stderrData) {
-        const lines = stderrData.split('\n').map(l => l.trim()).filter(Boolean);
-        const errorLine = lines.find(line => line.toLowerCase().includes('error'));
-        if (errorLine) {
-          cleanError = errorLine;
-        } else if (lines.length > 0) {
-          cleanError = lines[lines.length - 1];
-        }
-      }
+      const cleanError = getCleanError(stderrData, 'Failed to fetch video details. Verify the link and try again.');
       return res.status(500).json({ error: cleanError });
     }
 
@@ -382,13 +391,7 @@ app.post('/api/download', (req, res) => {
     // If the process was terminated (e.g., SIGKILL on cancellation), code might be null or non-zero
     if (code !== 0 && job.status !== 'error') {
       console.error(`Job ${jobId} failed or closed with code ${code}. Error: ${stderrData}`);
-      let cleanError = 'Download failed. The stream quality may not be available or was restricted.';
-      if (stderrData) {
-        const errorLine = stderrData.split('\n').find(line => line.includes('ERROR:'));
-        if (errorLine) {
-          cleanError = errorLine.replace('ERROR:', '').trim();
-        }
-      }
+      const cleanError = getCleanError(stderrData, 'Download failed. The stream quality may not be available or was restricted.');
       updateJob({ status: 'error', error: cleanError });
       return;
     }
