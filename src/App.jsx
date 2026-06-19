@@ -265,6 +265,74 @@ function App() {
         throw new Error(data.error || 'Failed to start download.');
       }
 
+      if (data.streamUrl && data.totalSize) {
+        // Vercel Serverless / Client-Side Chunked Downloading
+        setDownloadStatus('downloading');
+        setDownloadProgress(0);
+        setDownloadSize(`${(data.totalSize / (1024 * 1024)).toFixed(1)} MB`);
+        
+        const totalSize = data.totalSize;
+        const streamUrl = data.streamUrl;
+        const fileName = data.fileName;
+        
+        const chunkSize = 4 * 1024 * 1024; // 4MB chunks
+        let start = 0;
+        const chunks = [];
+        let downloadedBytes = 0;
+
+        while (start < totalSize) {
+          const end = Math.min(start + chunkSize - 1, totalSize - 1);
+          const chunkUrl = `${API_BASE}/api/chunk?url=${encodeURIComponent(streamUrl)}&start=${start}&end=${end}`;
+          
+          const chunkResponse = await fetch(chunkUrl);
+          if (!chunkResponse.ok) {
+            throw new Error('Error downloading video chunk. Vercel connection limits exceeded.');
+          }
+          
+          const chunkBlob = await chunkResponse.blob();
+          chunks.push(chunkBlob);
+          
+          downloadedBytes += (end - start + 1);
+          const progress = Math.round((downloadedBytes / totalSize) * 100);
+          setDownloadProgress(progress);
+          
+          // Show progress details
+          setDownloadSpeed(`${(downloadedBytes / (1024 * 1024)).toFixed(1)} MB / ${(totalSize / (1024 * 1024)).toFixed(1)} MB`);
+          
+          start = end + 1;
+        }
+
+        // Stitched all chunks together
+        setDownloadStatus('completed');
+        setDownloadProgress(100);
+
+        const finalBlob = new Blob(chunks, { type: 'video/mp4' });
+        const localDownloadUrl = URL.createObjectURL(finalBlob);
+        
+        const downloadLink = document.createElement('a');
+        downloadLink.href = localDownloadUrl;
+        downloadLink.setAttribute('download', fileName);
+        document.body.appendChild(downloadLink);
+        downloadLink.click();
+        downloadLink.remove();
+        
+        // Add to local history list
+        const newHistoryItem = {
+          id: crypto.randomUUID(),
+          title: videoInfo.title,
+          thumbnail: videoInfo.thumbnail,
+          platform: videoInfo.platform,
+          quality: selectedQuality,
+          date: new Date().toLocaleDateString(),
+          downloadUrl: localDownloadUrl
+        };
+        saveHistory([newHistoryItem, ...history]);
+
+        // Clean up object URL
+        setTimeout(() => URL.revokeObjectURL(localDownloadUrl), 10000);
+        return;
+      }
+
       const activeJobId = data.jobId;
       setJobId(activeJobId);
       setDownloadStatus('downloading');

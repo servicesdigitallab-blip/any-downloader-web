@@ -271,8 +271,43 @@ app.get('/api/info', async (req, res) => {
   });
 });
 
+// GET /api/chunk - Stream a specific byte range of a video
+app.get('/api/chunk', async (req, res) => {
+  const { url, start, end } = req.query;
+  if (!url) {
+    return res.status(400).json({ error: 'URL parameter is required' });
+  }
+
+  try {
+    const headers = {
+      'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36',
+      'Range': `bytes=${start}-${end}`
+    };
+
+    const response = await fetch(url, { headers });
+    if (!response.ok && response.status !== 206) {
+      throw new Error(`Failed to fetch chunk: ${response.statusText} (${response.status})`);
+    }
+
+    res.setHeader('Content-Type', response.headers.get('content-type') || 'application/octet-stream');
+    res.setHeader('Content-Length', response.headers.get('content-length') || '');
+    res.setHeader('Content-Range', response.headers.get('content-range') || '');
+
+    const body = response.body;
+    if (body) {
+      const { Readable } = await import('stream');
+      Readable.fromWeb(body).pipe(res);
+    } else {
+      res.status(500).json({ error: 'No response body' });
+    }
+  } catch (err) {
+    console.error('Error fetching chunk:', err);
+    res.status(500).json({ error: err.message });
+  }
+});
+
 // POST /api/download - Start a download job
-app.post('/api/download', (req, res) => {
+app.post('/api/download', async (req, res) => {
   const { url, quality, title } = req.body;
 
   if (!url || !quality || !title) {
@@ -288,9 +323,51 @@ app.post('/api/download', (req, res) => {
 
   // Vercel platform safeguards (limitations on response size and runtime dependencies)
   if (isVercel) {
-    return res.status(403).json({ 
-      error: 'Vercel serverless functions have a strict 4.5MB response size limit and lack system dependencies like Python. Video downloading is NOT supported on Vercel. Please deploy this repository to Render.com (using the included render.yaml file) for unlimited, full-speed downloads.' 
-    });
+    const isYouTube = url.includes('youtube.com') || url.includes('youtu.be');
+    if (isYouTube) {
+      try {
+        console.log(`Getting direct download link for YouTube: ${url}`);
+        const data = await ytdl.getInfo(url);
+        
+        let ytdlQuality = 'highest';
+        if (quality === '360p' || quality === '480p') {
+          ytdlQuality = '18'; // 360p
+        } else if (quality === 'audio') {
+          ytdlQuality = 'highestaudio';
+        }
+        
+        const formats = data.formats || [];
+        const filterStr = quality === 'audio' ? 'audioonly' : 'videoandaudio';
+        const format = ytdl.chooseFormat(formats, { quality: ytdlQuality, filter: filterStr });
+        
+        if (!format || !format.url) {
+          throw new Error('No compatible YouTube stream format found with audio and video.');
+        }
+
+        // Get format file size
+        let contentLength = parseInt(format.contentLength);
+        if (!contentLength || isNaN(contentLength)) {
+          const headRes = await fetch(format.url, { method: 'HEAD' });
+          contentLength = parseInt(headRes.headers.get('content-length')) || 0;
+        }
+
+        const fileExt = quality === 'audio' ? 'mp3' : 'mp4';
+        const fileName = `[Any Downloader] - ${title.replace(/[\\/:*?"<>|]/g, '_')}.${fileExt}`;
+
+        return res.json({
+          streamUrl: format.url,
+          totalSize: contentLength,
+          fileName
+        });
+      } catch (err) {
+        console.error('Failed to resolve direct streaming info on Vercel:', err);
+        return res.status(500).json({ error: `Vercel download failed: ${err.message}` });
+      }
+    } else {
+      return res.status(403).json({ 
+        error: 'Vercel serverless functions have a strict 4.5MB response size limit and lack system dependencies like Python. Video downloading for TikTok/Pinterest/Instagram is NOT supported on Vercel. Please deploy this repository to Render.com (using the included render.yaml file) for unlimited, full-speed downloads.' 
+      });
+    }
   }
 
   // Map requested quality to yt-dlp format options
