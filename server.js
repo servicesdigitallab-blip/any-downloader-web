@@ -632,6 +632,10 @@ async function getYouTubeOEmbed(url) {
   }
   
   const durationSec = pageMeta ? pageMeta.durationSec : 0;
+  if (!durationSec || durationSec === 0) {
+    throw new Error(`oEmbed watch page scrape returned 0 or missing duration`);
+  }
+
   const description = (pageMeta && pageMeta.description) || `Uploaded by ${oEmbedRes.author_name || 'unknown'}.`;
   const tags = (pageMeta && pageMeta.tags) || [];
   
@@ -829,6 +833,13 @@ app.get('/api/info', async (req, res) => {
   if (isVercel) {
     try {
       console.log(`Vercel environment: Scraping metadata for ${platformName} from ${url}`);
+      const info = await scrapeOpenGraphMetadata(url, platformName);
+      if (info && info.duration_raw > 0) {
+        return res.json(info);
+      }
+      throw new Error('Scraped duration is 0 or missing');
+    } catch (err) {
+      console.warn(`Failed to scrape Open Graph with duration for ${platformName}, trying oEmbed/generic fallbacks:`, err.message);
       if (platformName === 'tiktok') {
         try {
           const oEmbedUrl = `https://www.tiktok.com/oembed?url=${encodeURIComponent(url)}`;
@@ -848,14 +859,11 @@ app.get('/api/info', async (req, res) => {
             });
           }
         } catch (tokErr) {
-          console.warn('TikTok oEmbed failed, falling back to Open Graph:', tokErr.message);
+          console.warn('TikTok oEmbed fallback failed:', tokErr.message);
         }
       }
 
-      const info = await scrapeOpenGraphMetadata(url, platformName);
-      return res.json(info);
-    } catch (err) {
-      console.warn(`Failed to scrape Open Graph, using generic metadata for ${platformName}`);
+      // Generic fallback
       return res.json({
         title: `${platformName.charAt(0).toUpperCase() + platformName.slice(1)} Video`,
         duration: 'Unknown',
@@ -956,7 +964,7 @@ app.get('/api/info', async (req, res) => {
   });
 });
 
-// GET /api/chunk - Stream a specific byte range of a video
+// GET /api/chunk - Stream a specific byte range of a video (or entire file if range omitted)
 app.get('/api/chunk', async (req, res) => {
   const { url, start, end } = req.query;
   if (!url) {
@@ -965,18 +973,22 @@ app.get('/api/chunk', async (req, res) => {
 
   try {
     const headers = {
-      'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36',
-      'Range': `bytes=${start}-${end}`
+      'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36'
     };
+    if (start !== undefined && end !== undefined) {
+      headers['Range'] = `bytes=${start}-${end}`;
+    }
 
     const response = await fetch(url, { headers });
     if (!response.ok && response.status !== 206) {
-      throw new Error(`Failed to fetch chunk: ${response.statusText} (${response.status})`);
+      throw new Error(`Failed to fetch stream: ${response.statusText} (${response.status})`);
     }
 
     res.setHeader('Content-Type', response.headers.get('content-type') || 'application/octet-stream');
     res.setHeader('Content-Length', response.headers.get('content-length') || '');
-    res.setHeader('Content-Range', response.headers.get('content-range') || '');
+    if (response.headers.has('content-range')) {
+      res.setHeader('Content-Range', response.headers.get('content-range') || '');
+    }
 
     const body = response.body;
     if (body) {
