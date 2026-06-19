@@ -286,6 +286,29 @@ app.post('/api/download', (req, res) => {
   const jobId = crypto.randomUUID();
   console.log(`Starting download job ${jobId} for quality ${quality}`);
 
+  // If running on Vercel and it is a YouTube URL, we use direct streaming fallback
+  const isYouTube = url.includes('youtube.com') || url.includes('youtu.be');
+  if (isVercel && isYouTube) {
+    const fileExt = quality === 'audio' ? 'mp3' : 'mp4';
+    const job = {
+      id: jobId,
+      status: 'completed',
+      progress: 100,
+      speed: '0 KiB/s',
+      eta: '0s',
+      size: 'Unknown',
+      filePath: '', // indicates streaming
+      fileName: `[Any Downloader] - ${title.replace(/[\\/:*?"<>|]/g, '_')}.${fileExt}`,
+      error: null,
+      clients: [],
+      isStreaming: true,
+      originalUrl: url,
+      quality: quality
+    };
+    jobs.set(jobId, job);
+    return res.json({ jobId });
+  }
+
   // Vercel FFmpeg limitation safeguard
   const currentFfmpegPath = path.join(BIN_DIR, process.platform === 'win32' ? 'ffmpeg.exe' : 'ffmpeg');
   if (isVercel && !fs.existsSync(currentFfmpegPath)) {
@@ -546,7 +569,49 @@ app.get('/api/file/:jobId', (req, res) => {
   const { jobId } = req.params;
   const job = jobs.get(jobId);
 
-  if (!job || job.status !== 'completed' || !job.filePath || !fs.existsSync(job.filePath)) {
+  if (!job || job.status !== 'completed') {
+    return res.status(404).json({ error: 'Job not found or not completed' });
+  }
+
+  if (job.isStreaming) {
+    console.log(`Streaming video directly using ytdl-core for job ${jobId}: ${job.fileName}`);
+    
+    let ytdlQuality = 'highest';
+    if (job.quality === '360p' || job.quality === '480p') {
+      ytdlQuality = '18'; // format 18 is 360p MP4 with audio
+    } else if (job.quality === 'audio') {
+      ytdlQuality = 'highestaudio';
+      res.setHeader('Content-Type', 'audio/mpeg');
+      res.setHeader('Content-Disposition', `attachment; filename="${encodeURIComponent(job.fileName)}"`);
+    } else {
+      res.setHeader('Content-Type', 'video/mp4');
+      res.setHeader('Content-Disposition', `attachment; filename="${encodeURIComponent(job.fileName)}"`);
+    }
+
+    try {
+      const stream = ytdl(job.originalUrl, { 
+        quality: ytdlQuality,
+        filter: job.quality === 'audio' ? 'audioonly' : 'videoandaudio'
+      });
+      stream.pipe(res);
+      stream.on('end', () => {
+        jobs.delete(jobId);
+        console.log(`Cleaned up streaming job ${jobId}`);
+      });
+      stream.on('error', (err) => {
+        console.error('ytdl-core stream error:', err);
+        if (!res.headersSent) {
+          res.status(500).json({ error: 'Error streaming video from YouTube.' });
+        }
+      });
+      return;
+    } catch (e) {
+      console.error('Failed to initialize ytdl-core stream:', e);
+      return res.status(500).json({ error: 'Failed to stream video.' });
+    }
+  }
+
+  if (!job.filePath || !fs.existsSync(job.filePath)) {
     return res.status(404).json({ error: 'Downloaded file not found' });
   }
 
