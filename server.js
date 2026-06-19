@@ -13,12 +13,13 @@ const app = express();
 const PORT = process.env.PORT || 5000;
 
 // Setup directories
+const isVercel = process.env.VERCEL === '1' || !!process.env.VERCEL;
 const BIN_DIR = path.join(__dirname, 'bin');
-const DOWNLOADS_DIR = path.join(__dirname, 'downloads');
+const DOWNLOADS_DIR = isVercel ? '/tmp' : path.join(__dirname, 'downloads');
 const YTDLP_PATH = path.join(BIN_DIR, 'yt-dlp.exe');
 const FFMPEG_DIR = BIN_DIR; // ffmpeg.exe is in bin/
 
-if (!fs.existsSync(DOWNLOADS_DIR)) {
+if (!isVercel && !fs.existsSync(DOWNLOADS_DIR)) {
   fs.mkdirSync(DOWNLOADS_DIR, { recursive: true });
 }
 
@@ -93,6 +94,19 @@ app.get('/api/info', (req, res) => {
 
   let stdoutData = '';
   let stderrData = '';
+  let hasResponded = false;
+
+  proc.on('error', (err) => {
+    console.error(`Failed to spawn yt-dlp:`, err);
+    if (!hasResponded) {
+      hasResponded = true;
+      let errorMsg = 'Failed to execute video downloader.';
+      if (isVercel) {
+        errorMsg = 'Downloads are not supported in Vercel serverless functions (requires persistent server like Render, Railway, or a VPS).';
+      }
+      res.status(500).json({ error: errorMsg });
+    }
+  });
 
   proc.stdout.on('data', (data) => {
     stdoutData += data.toString();
@@ -103,6 +117,9 @@ app.get('/api/info', (req, res) => {
   });
 
   proc.on('close', (code) => {
+    if (hasResponded) return;
+    hasResponded = true;
+
     if (code !== 0) {
       console.error(`yt-dlp info failed with code ${code}. Error: ${stderrData}`);
       return res.status(500).json({ error: 'Failed to fetch video details. Verify the link and try again.' });
@@ -198,6 +215,15 @@ app.post('/api/download', (req, res) => {
 
   console.log(`Running yt-dlp with args: ${args.join(' ')}`);
   const proc = spawn(YTDLP_PATH, args);
+
+  proc.on('error', (err) => {
+    console.error(`Job ${jobId} failed to spawn yt-dlp:`, err);
+    let errMsg = 'Failed to execute video downloader.';
+    if (isVercel) {
+      errMsg = 'Downloads are not supported in Vercel serverless functions (requires persistent server like Render, Railway, or a VPS).';
+    }
+    updateJob({ status: 'error', error: errMsg });
+  });
 
   const job = {
     id: jobId,
@@ -426,6 +452,10 @@ app.get('*', (req, res) => {
   res.sendFile(path.join(frontendDist, 'index.html'));
 });
 
-app.listen(PORT, () => {
-  console.log(`Server is running on port ${PORT}`);
-});
+if (process.env.NODE_ENV !== 'production' || !process.env.VERCEL) {
+  app.listen(PORT, () => {
+    console.log(`Server is running on port ${PORT}`);
+  });
+}
+
+export default app;

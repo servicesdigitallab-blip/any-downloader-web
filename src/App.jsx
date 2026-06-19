@@ -26,6 +26,8 @@ import {
   Slash
 } from 'lucide-react';
 
+const API_BASE = import.meta.env.VITE_API_BASE || '';
+
 // Define quality options
 const qualityOptions = [
   { value: '4k', label: '4K Ultra HD', height: 2160, tag: 'MKV/MP4' },
@@ -201,7 +203,7 @@ function App() {
     setHasRedirected(false);
 
     try {
-      const response = await fetch(`/api/info?url=${encodeURIComponent(url.trim())}`);
+      const response = await fetch(`${API_BASE}/api/info?url=${encodeURIComponent(url.trim())}`);
       const data = await response.json();
 
       if (!response.ok) {
@@ -236,7 +238,7 @@ function App() {
     setDownloadError(null);
 
     try {
-      const response = await fetch('/api/download', {
+      const response = await fetch(`${API_BASE}/api/download`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -256,7 +258,7 @@ function App() {
       setJobId(activeJobId);
       setDownloadStatus('downloading');
 
-      const eventSource = new EventSource(`/api/progress/${activeJobId}`);
+      const eventSource = new EventSource(`${API_BASE}/api/progress/${activeJobId}`);
 
       eventSource.onmessage = (event) => {
         const jobUpdate = JSON.parse(event.data);
@@ -277,7 +279,7 @@ function App() {
           setHasRedirected(false);
           
           const downloadLink = document.createElement('a');
-          downloadLink.href = `/api/file/${activeJobId}`;
+          downloadLink.href = `${API_BASE}/api/file/${activeJobId}`;
           downloadLink.setAttribute('download', '');
           document.body.appendChild(downloadLink);
           downloadLink.click();
@@ -291,7 +293,7 @@ function App() {
             platform: videoInfo.platform,
             quality: selectedQuality,
             date: new Date().toLocaleDateString(),
-            downloadUrl: `/api/file/${activeJobId}`
+            downloadUrl: `${API_BASE}/api/file/${activeJobId}`
           };
           saveHistory([newHistoryItem, ...history]);
         }
@@ -336,7 +338,7 @@ function App() {
     if (!jobId) return;
     try {
       console.log('Sending cancellation request for:', jobId);
-      await fetch('/api/cancel', {
+      await fetch(`${API_BASE}/api/cancel`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ jobId })
