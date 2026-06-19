@@ -490,8 +490,8 @@ app.get('/api/info', async (req, res) => {
         }
       }
       
-      if (!videoInfo) {
-        throw lastErr || new Error('Failed to resolve video info with all clients.');
+      if (!videoInfo || !videoInfo.basic_info || !videoInfo.basic_info.title || videoInfo.basic_info.title.toLowerCase() === 'youtube video' || !videoInfo.basic_info.duration) {
+        throw new Error('youtubei.js returned empty or blocked metadata.');
       }
       
       const formats = videoInfo.streaming_data?.formats || [];
@@ -530,6 +530,10 @@ app.get('/api/info', async (req, res) => {
       console.warn(`youtubei.js failed to fetch info, trying @distube/ytdl-core fallback:`, ytErr.message);
       try {
         const data = await ytdl.getInfo(url);
+        if (!data || !data.videoDetails || !data.videoDetails.title || data.videoDetails.title.toLowerCase() === 'youtube video' || !data.videoDetails.lengthSeconds || parseInt(data.videoDetails.lengthSeconds) === 0) {
+          throw new Error('ytdl-core returned empty or blocked metadata.');
+        }
+
         const formats = data.formats || [];
         const heights = formats.map(f => f.height || 0);
         const maxHeight = Math.max(...heights, 0);
@@ -556,6 +560,10 @@ app.get('/api/info', async (req, res) => {
           const videoId = getYouTubeID(url);
           const invidiousData = await fetchInvidiousVideoInfo(videoId);
           
+          if (!invidiousData || !invidiousData.title || invidiousData.title.toLowerCase() === 'youtube video' || !invidiousData.lengthSeconds || parseInt(invidiousData.lengthSeconds) === 0) {
+            throw new Error('Invidious returned empty or blocked metadata.');
+          }
+
           const info = {
             title: invidiousData.title || 'YouTube Video',
             duration: formatDuration(invidiousData.lengthSeconds || 0),
@@ -896,14 +904,13 @@ app.post('/api/download', async (req, res) => {
           console.warn('ytdl-core download resolution failed on Vercel, trying Cobalt API fallback:', ytdlErr.message);
           try {
             const cobaltResult = await fetchFromCobalt(url, quality);
-            const contentLength = await getUrlContentLength(cobaltResult.url);
             
             const fileExt = quality === 'audio' ? 'mp3' : 'mp4';
             const fileName = `[Any Downloader] - ${title.replace(/[\\/:*?"<>|]/g, '_')}.${fileExt}`;
 
             return res.json({
               streamUrl: cobaltResult.url,
-              totalSize: contentLength || 15 * 1024 * 1024,
+              direct: true,
               fileName
             });
           } catch (cobaltErr) {
@@ -935,14 +942,13 @@ app.post('/api/download', async (req, res) => {
       try {
         console.log(`Resolving non-YouTube download for ${url} via Cobalt API...`);
         const cobaltResult = await fetchFromCobalt(url, quality);
-        const contentLength = await getUrlContentLength(cobaltResult.url);
         
         const fileExt = quality === 'audio' ? 'mp3' : 'mp4';
         const fileName = `[Any Downloader] - ${title.replace(/[\\/:*?"<>|]/g, '_')}.${fileExt}`;
 
         return res.json({
           streamUrl: cobaltResult.url,
-          totalSize: contentLength || 10 * 1024 * 1024,
+          direct: true,
           fileName
         });
       } catch (cobaltErr) {

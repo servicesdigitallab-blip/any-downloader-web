@@ -265,8 +265,36 @@ function App() {
         throw new Error(data.error || 'Failed to start download.');
       }
 
-      if (data.streamUrl && data.totalSize) {
-        // Vercel Serverless / Client-Side Chunked Downloading
+      if (data.streamUrl) {
+        if (data.direct) {
+          // Direct Download link (like Cobalt)
+          setDownloadStatus('completed');
+          setDownloadProgress(100);
+          
+          const downloadLink = document.createElement('a');
+          downloadLink.href = data.streamUrl;
+          downloadLink.setAttribute('download', data.fileName);
+          downloadLink.setAttribute('target', '_blank');
+          document.body.appendChild(downloadLink);
+          downloadLink.click();
+          downloadLink.remove();
+          
+          // Add to local history list
+          const newHistoryItem = {
+            id: crypto.randomUUID(),
+            title: videoInfo.title,
+            thumbnail: videoInfo.thumbnail,
+            platform: videoInfo.platform,
+            quality: selectedQuality,
+            date: new Date().toLocaleDateString(),
+            downloadUrl: data.streamUrl
+          };
+          saveHistory([newHistoryItem, ...history]);
+          return;
+        }
+
+        if (data.totalSize) {
+          // Vercel Serverless / Client-Side Chunked Downloading
         setDownloadStatus('downloading');
         setDownloadProgress(0);
         setDownloadSize(`${(data.totalSize / (1024 * 1024)).toFixed(1)} MB`);
@@ -332,6 +360,7 @@ function App() {
         setTimeout(() => URL.revokeObjectURL(localDownloadUrl), 10000);
         return;
       }
+    }
 
       const activeJobId = data.jobId;
       setJobId(activeJobId);
