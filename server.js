@@ -589,9 +589,20 @@ app.get('/api/file/:jobId', (req, res) => {
     }
 
     try {
+      // Simulate real browser headers in ytdl to avoid 403 Forbidden rate limits/blocks on Vercel
+      const videoId = ytdl.getVideoID(job.originalUrl);
       const stream = ytdl(job.originalUrl, { 
         quality: ytdlQuality,
-        filter: job.quality === 'audio' ? 'audioonly' : 'videoandaudio'
+        filter: job.quality === 'audio' ? 'audioonly' : 'videoandaudio',
+        requestOptions: {
+          headers: {
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36',
+            'Accept': '*/*',
+            'Accept-Language': 'en-US,en;q=0.9',
+            'Origin': 'https://www.youtube.com',
+            'Referer': `https://www.youtube.com/watch?v=${videoId}`
+          }
+        }
       });
       stream.pipe(res);
       stream.on('end', () => {
