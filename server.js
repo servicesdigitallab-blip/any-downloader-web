@@ -139,6 +139,163 @@ app.get('/api/debug', (req, res) => {
   }
 });
 
+// Community Cobalt API v10 instances fallback list
+const COBALT_INSTANCES = [
+  'https://api.cobalt.blackcat.sweeux.org',
+  'https://rue-cobalt.xenon.zone'
+];
+
+// Helper: Fetch direct content length of a URL using HEAD or GET range request
+async function getUrlContentLength(url) {
+  try {
+    const headRes = await fetch(url, {
+      method: 'HEAD',
+      headers: {
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36'
+      }
+    });
+    if (headRes.ok) {
+      const len = parseInt(headRes.headers.get('content-length'), 10);
+      if (len > 0) return len;
+    }
+  } catch (e) {
+    console.warn('HEAD request failed for content length, trying GET range:', e.message);
+  }
+
+  try {
+    const getRes = await fetch(url, {
+      headers: {
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36',
+        'Range': 'bytes=0-0'
+      }
+    });
+    if (getRes.ok || getRes.status === 206) {
+      const contentRange = getRes.headers.get('content-range');
+      if (contentRange) {
+        const match = contentRange.match(/\/(\d+)$/);
+        if (match) {
+          return parseInt(match[1], 10);
+        }
+      }
+      const len = parseInt(getRes.headers.get('content-length'), 10);
+      if (len > 0) return len;
+    }
+  } catch (e) {
+    console.warn('GET range request failed for content length:', e.message);
+  }
+
+  return 0;
+}
+
+// Helper: Resolve download via community Cobalt API v10
+async function fetchFromCobalt(videoUrl, quality) {
+  let videoQuality = '1080';
+  let downloadMode = 'auto';
+
+  if (quality === 'audio') {
+    downloadMode = 'audio';
+  } else {
+    const cleanQuality = quality.replace('p', '');
+    if (cleanQuality === '4k' || cleanQuality === '2160') {
+      videoQuality = '2160';
+    } else if (cleanQuality === '2k' || cleanQuality === '1440') {
+      videoQuality = '1440';
+    } else if (['1080', '720', '480', '360', '240', '144'].includes(cleanQuality)) {
+      videoQuality = cleanQuality;
+    } else {
+      videoQuality = '1080';
+    }
+  }
+
+  for (const instance of COBALT_INSTANCES) {
+    try {
+      console.log(`Trying Cobalt instance: ${instance} for url: ${videoUrl}`);
+      const response = await fetch(instance, {
+        method: 'POST',
+        headers: {
+          'Accept': 'application/json',
+          'Content-Type': 'application/json',
+          'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36'
+        },
+        body: JSON.stringify({
+          url: videoUrl,
+          videoQuality: videoQuality,
+          downloadMode: downloadMode
+        }),
+        signal: AbortSignal.timeout(8000)
+      });
+
+      if (response.ok) {
+        const data = await response.json();
+        if (data && (data.status === 'redirect' || data.status === 'tunnel' || data.url)) {
+          return {
+            url: data.url,
+            filename: data.filename || `download.${quality === 'audio' ? 'mp3' : 'mp4'}`
+          };
+        } else if (data && data.status === 'picker' && data.picker && data.picker.length > 0) {
+          const item = data.picker.find(p => p.type === 'video') || data.picker[0];
+          return {
+            url: item.url,
+            filename: data.filename || `download.${quality === 'audio' ? 'mp3' : 'mp4'}`
+          };
+        }
+      } else {
+        const errData = await response.json().catch(() => ({}));
+        console.warn(`Cobalt instance ${instance} returned status ${response.status}:`, errData);
+      }
+    } catch (err) {
+      console.warn(`Cobalt instance ${instance} failed:`, err.message);
+    }
+  }
+  throw new Error('All community Cobalt instances failed to process this video.');
+}
+
+// Helper: Scrape Open Graph metadata for TikTok/Instagram/Pinterest
+async function scrapeOpenGraphMetadata(url, platform) {
+  try {
+    const response = await fetch(url, {
+      headers: {
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36',
+        'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8',
+        'Accept-Language': 'en-US,en;q=0.5'
+      },
+      signal: AbortSignal.timeout(6000)
+    });
+
+    if (!response.ok) {
+      throw new Error(`HTTP status ${response.status}`);
+    }
+
+    const html = await response.text();
+
+    const ogTitleMatch = html.match(/<meta\s+property=["']og:title["']\s+content=["']([^"']+)["']/i) ||
+                        html.match(/<meta\s+content=["']([^"']+)["']\s+property=["']og:title["']/i);
+    const ogImageMatch = html.match(/<meta\s+property=["']og:image["']\s+content=["']([^"']+)["']/i) ||
+                        html.match(/<meta\s+content=["']([^"']+)["']\s+property=["']og:image["']/i);
+    const ogDescMatch = html.match(/<meta\s+property=["']og:description["']\s+content=["']([^"']+)["']/i) ||
+                       html.match(/<meta\s+content=["']([^"']+)["']\s+property=["']og:description["']/i);
+
+    const title = ogTitleMatch ? ogTitleMatch[1] : `${platform.charAt(0).toUpperCase() + platform.slice(1)} Video`;
+    const thumbnail = ogImageMatch ? ogImageMatch[1] : '';
+    const description = ogDescMatch ? ogDescMatch[1] : '';
+
+    return {
+      title: title.replace(/&amp;/g, '&').replace(/&lt;/g, '<').replace(/&gt;/g, '>').replace(/&quot;/g, '"'),
+      thumbnail,
+      description: description.replace(/&amp;/g, '&').replace(/&lt;/g, '<').replace(/&gt;/g, '>').replace(/&quot;/g, '"'),
+      duration: 'Unknown',
+      duration_raw: 0,
+      platform,
+      maxHeight: 720,
+      originalUrl: url,
+      tags: []
+    };
+  } catch (err) {
+    console.warn(`Open Graph metadata scraping failed for ${url}:`, err.message);
+    throw err;
+  }
+}
+
 // Public Invidious instances to fetch unblocked YouTube metadata and streams
 // Public Invidious instances fallback list (used if dynamic fetch fails)
 const FALLBACK_INVIDIOUS_INSTANCES = [
@@ -394,33 +551,97 @@ app.get('/api/info', async (req, res) => {
 
         return res.json(info);
       } catch (ytdlErr) {
-        console.warn(`@distube/ytdl-core failed, falling back to YouTube oEmbed:`, ytdlErr.message);
+        console.warn(`@distube/ytdl-core failed, trying Invidious fallback first for duration metadata:`, ytdlErr.message);
         try {
-          const info = await getYouTubeOEmbed(url);
+          const videoId = getYouTubeID(url);
+          const invidiousData = await fetchInvidiousVideoInfo(videoId);
+          
+          const info = {
+            title: invidiousData.title || 'YouTube Video',
+            duration: formatDuration(invidiousData.lengthSeconds || 0),
+            duration_raw: invidiousData.lengthSeconds || 0,
+            thumbnail: invidiousData.videoThumbnails && invidiousData.videoThumbnails.length > 0 ? invidiousData.videoThumbnails[invidiousData.videoThumbnails.length - 1].url : '',
+            platform: 'youtube',
+            maxHeight: 720,
+            originalUrl: url,
+            description: invidiousData.description || '',
+            tags: invidiousData.keywords || []
+          };
           return res.json(info);
-        } catch (oEmbedErr) {
-          console.warn(`YouTube oEmbed failed, falling back to Invidious metadata:`, oEmbedErr.message);
+        } catch (invErr) {
+          console.warn(`Invidious metadata fetch failed, falling back to YouTube oEmbed:`, invErr.message);
           try {
-            const videoId = getYouTubeID(url);
-            const invidiousData = await fetchInvidiousVideoInfo(videoId);
-            
-            const info = {
-              title: invidiousData.title || 'YouTube Video',
-              duration: formatDuration(invidiousData.lengthSeconds || 0),
-              duration_raw: invidiousData.lengthSeconds || 0,
-              thumbnail: invidiousData.videoThumbnails && invidiousData.videoThumbnails.length > 0 ? invidiousData.videoThumbnails[invidiousData.videoThumbnails.length - 1].url : '',
-              platform: 'youtube',
-              maxHeight: 720,
-              originalUrl: url,
-              description: invidiousData.description || '',
-              tags: invidiousData.keywords || []
-            };
+            const info = await getYouTubeOEmbed(url);
             return res.json(info);
-          } catch (invErr) {
-            console.warn(`Invidious fallback failed, letting it fall back to yt-dlp:`, invErr.message);
+          } catch (oEmbedErr) {
+            console.warn(`YouTube oEmbed failed, falling back to Open Graph scraping:`, oEmbedErr.message);
+            try {
+              const info = await scrapeOpenGraphMetadata(url, 'youtube');
+              return res.json(info);
+            } catch (ogErr) {
+              console.warn(`All metadata scrapers failed, using generic fallback:`, ogErr.message);
+              return res.json({
+                title: 'YouTube Video',
+                duration: 'Unknown',
+                duration_raw: 0,
+                thumbnail: '',
+                platform: 'youtube',
+                maxHeight: 720,
+                originalUrl: url,
+                description: 'Uploaded on YouTube. (Generic fallback)',
+                tags: []
+              });
+            }
           }
         }
       }
+    }
+  }
+
+  const platformName = url.includes('tiktok.com') ? 'tiktok' :
+                       (url.includes('pinterest.com') || url.includes('pin.it') ? 'pinterest' : 'instagram');
+
+  if (isVercel) {
+    try {
+      console.log(`Vercel environment: Scraping metadata for ${platformName} from ${url}`);
+      if (platformName === 'tiktok') {
+        try {
+          const oEmbedUrl = `https://www.tiktok.com/oembed?url=${encodeURIComponent(url)}`;
+          const response = await fetch(oEmbedUrl);
+          if (response.ok) {
+            const data = await response.json();
+            return res.json({
+              title: data.title || 'TikTok Video',
+              duration: 'Unknown',
+              duration_raw: 0,
+              thumbnail: data.thumbnail_url || '',
+              platform: 'tiktok',
+              maxHeight: 720,
+              originalUrl: url,
+              description: `Uploaded by ${data.author_name || 'unknown'}.`,
+              tags: []
+            });
+          }
+        } catch (tokErr) {
+          console.warn('TikTok oEmbed failed, falling back to Open Graph:', tokErr.message);
+        }
+      }
+
+      const info = await scrapeOpenGraphMetadata(url, platformName);
+      return res.json(info);
+    } catch (err) {
+      console.warn(`Failed to scrape Open Graph, using generic metadata for ${platformName}`);
+      return res.json({
+        title: `${platformName.charAt(0).toUpperCase() + platformName.slice(1)} Video`,
+        duration: 'Unknown',
+        duration_raw: 0,
+        thumbnail: '',
+        platform: platformName,
+        maxHeight: 720,
+        originalUrl: url,
+        description: `Video on ${platformName}.`,
+        tags: []
+      });
     }
   }
 
@@ -470,8 +691,14 @@ app.get('/api/info', async (req, res) => {
 
     if (code !== 0) {
       console.error(`yt-dlp info failed with code ${code}. Error: ${stderrData}`);
-      const cleanError = getCleanError(stderrData, 'Failed to fetch video details. Verify the link and try again.');
-      return res.status(500).json({ error: cleanError });
+      console.log(`yt-dlp failed locally, falling back to Open Graph scraper for ${platformName}`);
+      scrapeOpenGraphMetadata(url, platformName)
+        .then(info => res.json(info))
+        .catch(() => {
+          const cleanError = getCleanError(stderrData, 'Failed to fetch video details. Verify the link and try again.');
+          res.status(500).json({ error: cleanError });
+        });
+      return;
     }
 
     try {
@@ -666,33 +893,64 @@ app.post('/api/download', async (req, res) => {
             fileName
           });
         } catch (ytdlErr) {
-          console.warn('ytdl-core download resolution failed on Vercel, trying Invidious fallback:', ytdlErr.message);
+          console.warn('ytdl-core download resolution failed on Vercel, trying Cobalt API fallback:', ytdlErr.message);
           try {
-            const videoId = getYouTubeID(url);
-            const invidiousData = await fetchInvidiousVideoInfo(videoId);
-            const format = getInvidiousFormat(invidiousData, quality);
-            if (!format || !format.url) {
-              throw new Error('No compatible YouTube download stream found on Invidious.');
-            }
-
+            const cobaltResult = await fetchFromCobalt(url, quality);
+            const contentLength = await getUrlContentLength(cobaltResult.url);
+            
             const fileExt = quality === 'audio' ? 'mp3' : 'mp4';
             const fileName = `[Any Downloader] - ${title.replace(/[\\/:*?"<>|]/g, '_')}.${fileExt}`;
 
             return res.json({
-              streamUrl: format.url,
-              totalSize: format.size,
+              streamUrl: cobaltResult.url,
+              totalSize: contentLength || 15 * 1024 * 1024,
               fileName
             });
-          } catch (invErr) {
-            console.error('All direct streaming info methods failed on Vercel:', invErr.message);
-            return res.status(500).json({ error: `Vercel download failed: ${invErr.message}` });
+          } catch (cobaltErr) {
+            console.warn('Cobalt download fallback failed, trying Invidious fallback:', cobaltErr.message);
+            try {
+              const videoId = getYouTubeID(url);
+              const invidiousData = await fetchInvidiousVideoInfo(videoId);
+              const format = getInvidiousFormat(invidiousData, quality);
+              if (!format || !format.url) {
+                throw new Error('No compatible YouTube download stream found on Invidious.');
+              }
+
+              const fileExt = quality === 'audio' ? 'mp3' : 'mp4';
+              const fileName = `[Any Downloader] - ${title.replace(/[\\/:*?"<>|]/g, '_')}.${fileExt}`;
+
+              return res.json({
+                streamUrl: format.url,
+                totalSize: format.size || 15 * 1024 * 1024,
+                fileName
+              });
+            } catch (invErr) {
+              console.error('All direct streaming info methods failed on Vercel:', invErr.message);
+              return res.status(500).json({ error: `Vercel download failed: All methods (including Cobalt & Invidious fallbacks) failed.` });
+            }
           }
         }
       }
     } else {
-      return res.status(403).json({ 
-        error: 'Vercel serverless functions have a strict 4.5MB response size limit and lack system dependencies like Python. Video downloading for TikTok/Pinterest/Instagram is NOT supported on Vercel. Please deploy this repository to Render.com (using the included render.yaml file) for unlimited, full-speed downloads.' 
-      });
+      try {
+        console.log(`Resolving non-YouTube download for ${url} via Cobalt API...`);
+        const cobaltResult = await fetchFromCobalt(url, quality);
+        const contentLength = await getUrlContentLength(cobaltResult.url);
+        
+        const fileExt = quality === 'audio' ? 'mp3' : 'mp4';
+        const fileName = `[Any Downloader] - ${title.replace(/[\\/:*?"<>|]/g, '_')}.${fileExt}`;
+
+        return res.json({
+          streamUrl: cobaltResult.url,
+          totalSize: contentLength || 10 * 1024 * 1024,
+          fileName
+        });
+      } catch (cobaltErr) {
+        console.error(`Cobalt download failed for non-YouTube video:`, cobaltErr.message);
+        return res.status(500).json({ 
+          error: `Vercel download failed: ${cobaltErr.message}. For full compatibility, please deploy this repository to Render.com.` 
+        });
+      }
     }
   }
 
