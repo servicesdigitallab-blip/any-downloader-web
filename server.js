@@ -65,6 +65,35 @@ function formatDuration(seconds) {
   return `${mins}:${pad(secs)}`;
 }
 
+app.get('/api/debug', (req, res) => {
+  try {
+    const debugInfo = {
+      platform: process.platform,
+      arch: process.arch,
+      nodeVersion: process.version,
+      __dirname,
+      existsLocalBin: fs.existsSync(path.join(__dirname, 'bin')),
+      existsLocalYtdlp: fs.existsSync(path.join(__dirname, 'bin/yt-dlp')),
+      existsParentBin: fs.existsSync(path.join(__dirname, '..', 'bin')),
+      existsParentYtdlp: fs.existsSync(path.join(__dirname, '..', 'bin/yt-dlp')),
+      cwd: process.cwd(),
+      envVercel: process.env.VERCEL,
+      envNodeEnv: process.env.NODE_ENV
+    };
+
+    if (fs.existsSync('/var/task')) {
+      debugInfo.varTaskContents = fs.readdirSync('/var/task');
+    }
+    if (fs.existsSync('/var/task/api')) {
+      debugInfo.varTaskApiContents = fs.readdirSync('/var/task/api');
+    }
+    
+    res.json(debugInfo);
+  } catch (err) {
+    res.status(500).json({ error: err.message, stack: err.stack });
+  }
+});
+
 // GET /api/info - Get video details
 app.get('/api/info', (req, res) => {
   const { url } = req.query;
