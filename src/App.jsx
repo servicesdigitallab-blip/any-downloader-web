@@ -129,7 +129,10 @@ function App() {
     historyItem: null
   });
 
-  // Load history on mount
+  // Serverless Environment Check (Vercel vs Render/Local)
+  const [isServerless, setIsServerless] = useState(true); // Default to true (safe fallback)
+
+  // Load history and check server environment on mount
   useEffect(() => {
     const savedHistory = localStorage.getItem('any_downloader_history');
     if (savedHistory) {
@@ -139,6 +142,20 @@ function App() {
         console.error('Error loading history:', e);
       }
     }
+
+    // Check backend server config
+    const checkConfig = async () => {
+      try {
+        const config = await safeFetchJson(`${API_BASE}/api/config`);
+        if (config && typeof config.isVercel !== 'undefined') {
+          setIsServerless(config.isVercel);
+          console.log('Server environment detected. isServerless:', config.isVercel);
+        }
+      } catch (e) {
+        console.warn('Failed to fetch server config, defaulting to serverless mode:', e);
+      }
+    };
+    checkConfig();
   }, []);
 
   // Intersection Observer for scroll animations
@@ -308,44 +325,47 @@ function App() {
     let cobaltStreamUrl = '';
     let cobaltFileName = '';
 
-    // Loop through at most 10 instances on the client side to find one that works!
-    const targetInstances = instances.slice(0, 10);
+    // Only run the client-side Cobalt loop if we are in a Serverless (Vercel) environment
+    if (isServerless) {
+      // Loop through at most 10 instances on the client side to find one that works!
+      const targetInstances = instances.slice(0, 10);
 
-    for (let i = 0; i < targetInstances.length; i++) {
-      const instance = targetInstances[i];
-      setDownloadSpeed(`Connecting to download server ${i + 1}/${targetInstances.length}...`);
-      try {
-        const response = await fetch(instance, {
-          method: 'POST',
-          headers: {
-            'Accept': 'application/json',
-            'Content-Type': 'application/json'
-          },
-          body: JSON.stringify({
-            url: videoInfo.originalUrl,
-            videoQuality: videoQuality,
-            downloadMode: downloadMode
-          }),
-          signal: AbortSignal.timeout(3500) // Fast 3.5s check per server
-        });
+      for (let i = 0; i < targetInstances.length; i++) {
+        const instance = targetInstances[i];
+        setDownloadSpeed(`Connecting to download server ${i + 1}/${targetInstances.length}...`);
+        try {
+          const response = await fetch(instance, {
+            method: 'POST',
+            headers: {
+              'Accept': 'application/json',
+              'Content-Type': 'application/json'
+            },
+            body: JSON.stringify({
+              url: videoInfo.originalUrl,
+              videoQuality: videoQuality,
+              downloadMode: downloadMode
+            }),
+            signal: AbortSignal.timeout(3500) // Fast 3.5s check per server
+          });
 
-        if (response.ok) {
-          const data = await response.json();
-          if (data && (data.status === 'redirect' || data.status === 'tunnel' || data.url)) {
-            cobaltStreamUrl = data.url;
-            cobaltFileName = data.filename || `download.${selectedQuality === 'audio' ? 'mp3' : 'mp4'}`;
-            success = true;
-            break;
-          } else if (data && data.status === 'picker' && data.picker && data.picker.length > 0) {
-            const item = data.picker.find(p => p.type === 'video') || data.picker[0];
-            cobaltStreamUrl = item.url;
-            cobaltFileName = data.filename || `download.${selectedQuality === 'audio' ? 'mp3' : 'mp4'}`;
-            success = true;
-            break;
+          if (response.ok) {
+            const data = await response.json();
+            if (data && (data.status === 'redirect' || data.status === 'tunnel' || data.url)) {
+              cobaltStreamUrl = data.url;
+              cobaltFileName = data.filename || `download.${selectedQuality === 'audio' ? 'mp3' : 'mp4'}`;
+              success = true;
+              break;
+            } else if (data && data.status === 'picker' && data.picker && data.picker.length > 0) {
+              const item = data.picker.find(p => p.type === 'video') || data.picker[0];
+              cobaltStreamUrl = item.url;
+              cobaltFileName = data.filename || `download.${selectedQuality === 'audio' ? 'mp3' : 'mp4'}`;
+              success = true;
+              break;
+            }
           }
+        } catch (err) {
+          console.warn(`Client-side Cobalt check failed for ${instance}:`, err.message);
         }
-      } catch (err) {
-        console.warn(`Client-side Cobalt check failed for ${instance}:`, err.message);
       }
     }
 

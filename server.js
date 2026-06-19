@@ -139,6 +139,13 @@ app.get('/api/debug', (req, res) => {
   }
 });
 
+// GET /api/config - Get server environment config
+app.get('/api/config', (req, res) => {
+  res.json({
+    isVercel: process.env.VERCEL === '1' || !!process.env.VERCEL
+  });
+});
+
 // Helper: Resolve download via community Cobalt API v10 with dynamic scanning
 async function getCobaltInstances() {
   const staticInstances = [
