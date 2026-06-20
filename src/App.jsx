@@ -119,58 +119,71 @@ async function downloadStreamAsBlob({
   let directFetchSuccess = false;
   const startTime = Date.now();
 
-  // Try direct browser fetch first (works if stream has CORS allowed)
-  try {
-    console.log('Attempting direct browser fetch for:', streamUrl);
-    const response = await fetch(streamUrl, { signal: AbortSignal.timeout(15000) });
-    if (!response.ok) throw new Error(`Direct fetch failed with status ${response.status}`);
+  const isCobalt = streamUrl.includes('/tunnel') || streamUrl.includes('cobalt');
 
-    const reader = response.body.getReader();
-    let contentLength = parseInt(response.headers.get('content-length'), 10) || totalSize || 0;
-    let activeTotal = contentLength;
-    let localIsEstimated = !contentLength;
+  // Case 1: Cobalt stream URL (supports CORS, single-use token, NOT IP-bound)
+  if (isCobalt) {
+    try {
+      console.log('Attempting direct browser fetch for Cobalt stream:', streamUrl);
+      const response = await fetch(streamUrl, { signal: AbortSignal.timeout(30000) });
+      if (!response.ok) throw new Error(`Direct fetch failed with status ${response.status}`);
 
-    if (contentLength > 0) {
-      setDownloadSize(`${(contentLength / (1024 * 1024)).toFixed(1)} MB`);
-    }
+      const reader = response.body.getReader();
+      
+      // Check both content-length and estimated-content-length from Cobalt exposed CORS headers
+      let contentLength = parseInt(response.headers.get('content-length'), 10) || 
+                          parseInt(response.headers.get('estimated-content-length'), 10) || 
+                          totalSize || 0;
+      let activeTotal = contentLength;
+      let localIsEstimated = !contentLength;
 
-    while (true) {
-      const { done, value } = await reader.read();
-      if (done) break;
-
-      chunks.push(value);
-      downloadedBytes += value.length;
-
-      let currentTotal = activeTotal || downloadedBytes;
-      if (localIsEstimated && downloadedBytes >= currentTotal * 0.9) {
-        currentTotal = Math.max(currentTotal, downloadedBytes + 5 * 1024 * 1024);
-        activeTotal = currentTotal;
+      if (contentLength > 0) {
+        setDownloadSize(`${(contentLength / (1024 * 1024)).toFixed(1)} MB`);
       }
 
-      const progress = Math.min(Math.round((downloadedBytes / currentTotal) * 100), 99);
-      targetProgressRef.current = progress;
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
 
-      const elapsedSeconds = (Date.now() - startTime) / 1000;
-      const speed = elapsedSeconds > 0 ? (downloadedBytes / (1024 * 1024) / elapsedSeconds).toFixed(1) : '0';
-      const totalMbStr = activeTotal > 0 ? `${(activeTotal / (1024 * 1024)).toFixed(1)} MB` : `${(downloadedBytes / (1024 * 1024)).toFixed(1)} MB`;
-      setDownloadSpeed(`${(downloadedBytes / (1024 * 1024)).toFixed(1)} MB / ${localIsEstimated ? '~' : ''}${totalMbStr} (${speed} MB/s)`);
-      setDownloadSize(totalMbStr);
+        chunks.push(value);
+        downloadedBytes += value.length;
+
+        let currentTotal = activeTotal || downloadedBytes;
+        if (localIsEstimated && downloadedBytes >= currentTotal * 0.9) {
+          currentTotal = Math.max(currentTotal, downloadedBytes + 5 * 1024 * 1024);
+          activeTotal = currentTotal;
+        }
+
+        const progress = Math.min(Math.round((downloadedBytes / currentTotal) * 100), 99);
+        targetProgressRef.current = progress;
+
+        const elapsedSeconds = (Date.now() - startTime) / 1000;
+        const speed = elapsedSeconds > 0 ? (downloadedBytes / (1024 * 1024) / elapsedSeconds).toFixed(1) : '0';
+        const totalMbStr = activeTotal > 0 ? `${(activeTotal / (1024 * 1024)).toFixed(1)} MB` : `${(downloadedBytes / (1024 * 1024)).toFixed(1)} MB`;
+        setDownloadSpeed(`${(downloadedBytes / (1024 * 1024)).toFixed(1)} MB / ${localIsEstimated ? '~' : ''}${totalMbStr} (${speed} MB/s)`);
+        setDownloadSize(totalMbStr);
+      }
+
+      if (downloadedBytes === 0) throw new Error('Downloaded 0 bytes from direct stream.');
+
+      // Anti-corruption check
+      if (contentLength > 0 && downloadedBytes < contentLength) {
+        throw new Error('Download interrupted or incomplete.');
+      }
+
+      directFetchSuccess = true;
+    } catch (directErr) {
+      console.error('Direct Cobalt fetch failed:', directErr.message);
+      throw directErr; // Rethrow to bypass chunked proxy (since Cobalt single-use token will fail anyway) and go directly to redirect fallback
     }
-
-    if (downloadedBytes === 0) throw new Error('Downloaded 0 bytes from direct stream.');
-    
-    // Anti-corruption check
-    if (contentLength > 0 && downloadedBytes < contentLength) {
-      throw new Error('Download interrupted or incomplete.');
-    }
-
-    directFetchSuccess = true;
-  } catch (directErr) {
-    console.warn('Direct client-side stream download failed, falling back to chunked proxy:', directErr.message);
+  } else {
+    // Case 2: Server-generated stream URL (e.g. YouTube googlevideo.com - IP-bound, no CORS)
+    // We skip direct fetch to avoid 403 blocks and go straight to chunked proxy.
+    console.log('Skipping direct fetch for IP-locked server stream, using chunked proxy...');
   }
 
   // Fallback: chunked proxy download via Vercel (bypasses 10s timeout using small chunks)
-  if (!directFetchSuccess) {
+  if (!directFetchSuccess && !isCobalt) {
     chunks = [];
     downloadedBytes = 0;
     let start = 0;
@@ -951,29 +964,20 @@ function App() {
       setDownloadSpeed('Initializing stream...');
       
       let totalSize = 0;
-      let isEstimated = false;
+      let isEstimated = true;
 
-      try {
-        totalSize = await getUrlTotalSize(cobaltStreamUrl);
-      } catch (e) {
-        console.warn('Could not determine total size of stream:', e);
-      }
-
-      if (!totalSize) {
-        const durationSec = videoInfo.duration_raw || 60;
-        const bitrates = {
-          '4k': 1.875 * 1024 * 1024,
-          '2k': 0.75 * 1024 * 1024,
-          '1080p': 0.375 * 1024 * 1024,
-          '720p': 0.1875 * 1024 * 1024,
-          '480p': 0.1 * 1024 * 1024,
-          '360p': 0.0625 * 1024 * 1024,
-          'audio': 0.02 * 1024 * 1024
-        };
-        const factor = bitrates[selectedQuality] || bitrates['1080p'];
-        totalSize = Math.round(durationSec * factor);
-        isEstimated = true;
-      }
+      const durationSec = videoInfo.duration_raw || 60;
+      const bitrates = {
+        '4k': 1.875 * 1024 * 1024,
+        '2k': 0.75 * 1024 * 1024,
+        '1080p': 0.375 * 1024 * 1024,
+        '720p': 0.1875 * 1024 * 1024,
+        '480p': 0.1 * 1024 * 1024,
+        '360p': 0.0625 * 1024 * 1024,
+        'audio': 0.02 * 1024 * 1024
+      };
+      const factor = bitrates[selectedQuality] || bitrates['1080p'];
+      totalSize = Math.round(durationSec * factor);
 
       try {
         const finalBlob = await downloadStreamAsBlob({

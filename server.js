@@ -144,17 +144,19 @@ app.get('/api/debug', (req, res) => {
 // Helper: Resolve download via community Cobalt API v10 with dynamic scanning
 async function getCobaltInstances() {
   const verifiedInstances = [
-    'https://api.cobalt.blackcat.sweeux.org',
+    'https://rue-cobalt.xenon.zone',
     'https://cobaltapi.kittycat.boo',
-    'https://rue-cobalt.xenon.zone'
+    'https://dog.kittycat.boo',
+    'https://fox.kittycat.boo',
+    'https://api.cobalt.blackcat.sweeux.org'
   ];
 
   const staticInstances = [
-    'https://api.cobalt.blackcat.sweeux.org',
-    'https://cobaltapi.kittycat.boo',
     'https://rue-cobalt.xenon.zone',
-    'https://fox.kittycat.boo',
+    'https://cobaltapi.kittycat.boo',
     'https://dog.kittycat.boo',
+    'https://fox.kittycat.boo',
+    'https://api.cobalt.blackcat.sweeux.org',
     'https://cobaltapi.cjs.nz',
     'https://sunny.imput.net',
     'https://kityune.imput.net',
@@ -1119,13 +1121,22 @@ app.get('/api/chunk', async (req, res) => {
       let skippedBytes = 0;
       let sentBytes = 0;
 
+      console.log(`[ChunkProxy] Processing body. Slicing: ${shouldSlice}, has getReader: ${typeof body.getReader === 'function'}, has pipe: ${typeof body.pipe === 'function'}`);
+
       if (typeof body.getReader === 'function') {
         const reader = body.getReader();
         try {
+          let chunksCount = 0;
+          let bytesCount = 0;
           while (true) {
             const { done, value } = await reader.read();
-            if (done) break;
+            if (done) {
+              console.log(`[ChunkProxy] Reader done. Total chunks: ${chunksCount}, Total bytes: ${bytesCount}`);
+              break;
+            }
 
+            chunksCount++;
+            bytesCount += value.length;
             let chunk = value;
             if (shouldSlice) {
               if (skippedBytes < rangeStart) {
@@ -1143,6 +1154,7 @@ app.get('/api/chunk', async (req, res) => {
                 const take = sliceBytesNeed - sentBytes;
                 res.write(chunk.slice(0, take));
                 sentBytes += take;
+                console.log(`[ChunkProxy] Slice complete. Sent required bytes: ${sentBytes}`);
                 await reader.cancel().catch(() => {}); // Stop upstream stream safely
                 break;
               } else {
@@ -1154,8 +1166,9 @@ app.get('/api/chunk', async (req, res) => {
             }
           }
           res.end();
+          console.log(`[ChunkProxy] Finished streaming chunk range. Response ended.`);
         } catch (streamErr) {
-          console.error('Chunk reader stream error:', streamErr.message);
+          console.error('[ChunkProxy] Chunk reader stream error:', streamErr.message);
           if (!res.headersSent) {
             res.status(500).json({ error: 'Failed to read chunk stream.' });
           }
@@ -1415,18 +1428,8 @@ app.post('/api/download', async (req, res) => {
             const fileExt = quality === 'audio' ? 'mp3' : 'mp4';
             const fileName = `[Any Downloader] - ${title.replace(/[\\/:*?"<>|]/g, '_')}.${fileExt}`;
 
-            const cobaltSize = await getContentLength(cobaltResult.url);
-            if (cobaltSize > 0) {
-              return res.json({
-                streamUrl: cobaltResult.url,
-                totalSize: cobaltSize,
-                fileName
-              });
-            }
-
             return res.json({
               streamUrl: cobaltResult.url,
-              direct: true,
               fileName
             });
           } catch (cobaltErr) {
@@ -1462,18 +1465,8 @@ app.post('/api/download', async (req, res) => {
         const fileExt = quality === 'audio' ? 'mp3' : 'mp4';
         const fileName = `[Any Downloader] - ${title.replace(/[\\/:*?"<>|]/g, '_')}.${fileExt}`;
 
-        const cobaltSize = await getContentLength(cobaltResult.url);
-        if (cobaltSize > 0) {
-          return res.json({
-            streamUrl: cobaltResult.url,
-            totalSize: cobaltSize,
-            fileName
-          });
-        }
-
         return res.json({
           streamUrl: cobaltResult.url,
-          direct: true,
           fileName
         });
       } catch (cobaltErr) {
