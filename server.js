@@ -1571,10 +1571,10 @@ app.get('/api/file/:jobId', (req, res) => {
     } else if (job.quality === 'audio') {
       ytdlQuality = 'highestaudio';
       res.setHeader('Content-Type', 'audio/mpeg');
-      res.setHeader('Content-Disposition', `attachment; filename="${encodeURIComponent(job.fileName)}"`);
+      res.setHeader('Content-Disposition', `attachment; filename="${job.fileName.replace(/"/g, '\\"')}"; filename*=UTF-8''${encodeURIComponent(job.fileName)}`);
     } else {
       res.setHeader('Content-Type', 'video/mp4');
-      res.setHeader('Content-Disposition', `attachment; filename="${encodeURIComponent(job.fileName)}"`);
+      res.setHeader('Content-Disposition', `attachment; filename="${job.fileName.replace(/"/g, '\\"')}"; filename*=UTF-8''${encodeURIComponent(job.fileName)}`);
     }
 
     try {
@@ -1618,7 +1618,7 @@ app.get('/api/file/:jobId', (req, res) => {
   console.log(`Streaming file for job ${jobId}: ${job.fileName}`);
 
   // Set headers to trigger file download with customized filename
-  res.setHeader('Content-Disposition', `attachment; filename="${encodeURIComponent(job.fileName)}"`);
+  res.setHeader('Content-Disposition', `attachment; filename="${job.fileName.replace(/"/g, '\\"')}"; filename*=UTF-8''${encodeURIComponent(job.fileName)}`);
   res.setHeader('Content-Type', 'application/octet-stream');
 
   const fileStream = fs.createReadStream(job.filePath);

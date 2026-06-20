@@ -139,38 +139,101 @@ function App() {
   const [completedBlobUrl, setCompletedBlobUrl] = useState('');
   const [completedFileName, setCompletedFileName] = useState('');
 
-  const fakeProgressRef = React.useRef(null);
+  const targetProgressRef = React.useRef(0);
+  const displayedProgressRef = React.useRef(0);
+  const smoothProgressIntervalRef = React.useRef(null);
+  const downloadStatusRef = React.useRef(null);
+  const crawlCounterRef = React.useRef(0);
 
-  const startFakeProgress = () => {
-    if (fakeProgressRef.current) {
-      clearInterval(fakeProgressRef.current);
-    }
-    let val = 0;
-    fakeProgressRef.current = setInterval(() => {
-      val += 1;
-      if (val >= 25) {
-        clearInterval(fakeProgressRef.current);
-      } else {
-        setDownloadProgress(val);
-      }
-    }, 200); // Increment 1% every 200ms up to 25% during "Initializing..."
-  };
-
-  const clearFakeProgress = () => {
-    if (fakeProgressRef.current) {
-      clearInterval(fakeProgressRef.current);
-      fakeProgressRef.current = null;
-    }
-  };
-
-  // Automatically clear fake progress if status is no longer 'starting'
+  // Keep downloadStatusRef in sync
   useEffect(() => {
-    if (downloadStatus !== 'starting') {
-      clearFakeProgress();
+    downloadStatusRef.current = downloadStatus;
+  }, [downloadStatus]);
+
+  // Unified Smooth Progress Tracker Effect
+  useEffect(() => {
+    if (['starting', 'downloading', 'merging'].includes(downloadStatus)) {
+      if (!smoothProgressIntervalRef.current) {
+        crawlCounterRef.current = 0;
+        smoothProgressIntervalRef.current = setInterval(() => {
+          const current = displayedProgressRef.current;
+          const target = targetProgressRef.current;
+          const status = downloadStatusRef.current;
+
+          if (status === 'completed') {
+            if (current < 100) {
+              const next = Math.min(100, current + Math.max(1, Math.round((100 - current) / 3)));
+              displayedProgressRef.current = next;
+              setDownloadProgress(next);
+            } else {
+              clearInterval(smoothProgressIntervalRef.current);
+              smoothProgressIntervalRef.current = null;
+            }
+            return;
+          }
+
+          if (status === 'error' || !status) {
+            clearInterval(smoothProgressIntervalRef.current);
+            smoothProgressIntervalRef.current = null;
+            return;
+          }
+
+          // Active download status
+          if (current < target) {
+            const gap = target - current;
+            const increment = Math.max(1, Math.round(gap / 4));
+            const next = Math.min(target, current + increment);
+            displayedProgressRef.current = next;
+            setDownloadProgress(next);
+          } else {
+            crawlCounterRef.current += 1;
+            let ticksPerIncrement = 2; // default for 'starting' (every 200ms)
+            let maxCrawl = 25;
+
+            if (status === 'downloading') {
+              ticksPerIncrement = 6; // every 600ms
+              maxCrawl = 98;
+            } else if (status === 'merging') {
+              ticksPerIncrement = 12; // every 1.2s
+              maxCrawl = 99;
+            }
+
+            if (crawlCounterRef.current >= ticksPerIncrement) {
+              crawlCounterRef.current = 0;
+              if (current < maxCrawl) {
+                const next = current + 1;
+                displayedProgressRef.current = next;
+                setDownloadProgress(next);
+              }
+            }
+          }
+        }, 100);
+      }
+    } else if (downloadStatus === 'completed') {
+      if (!smoothProgressIntervalRef.current) {
+        smoothProgressIntervalRef.current = setInterval(() => {
+          const current = displayedProgressRef.current;
+          if (current < 100) {
+            const next = Math.min(100, current + Math.max(1, Math.round((100 - current) / 3)));
+            displayedProgressRef.current = next;
+            setDownloadProgress(next);
+          } else {
+            clearInterval(smoothProgressIntervalRef.current);
+            smoothProgressIntervalRef.current = null;
+          }
+        }, 100);
+      }
+    } else {
+      if (smoothProgressIntervalRef.current) {
+        clearInterval(smoothProgressIntervalRef.current);
+        smoothProgressIntervalRef.current = null;
+      }
     }
+
     return () => {
-      if (fakeProgressRef.current) {
-        clearInterval(fakeProgressRef.current);
+      if (smoothProgressIntervalRef.current) {
+        clearInterval(smoothProgressIntervalRef.current);
+        smoothProgressIntervalRef.current = null;
       }
     };
   }, [downloadStatus]);
@@ -344,9 +407,10 @@ function App() {
   const handleDownload = async () => {
     if (!videoInfo) return;
 
-    setDownloadStatus('starting');
-    startFakeProgress();
+    targetProgressRef.current = 0;
+    displayedProgressRef.current = 0;
     setDownloadProgress(0);
+    setDownloadStatus('starting');
     setDownloadSpeed('Initializing download engine...');
     setDownloadEta('');
     setDownloadSize('');
@@ -395,8 +459,8 @@ function App() {
       if (data.streamUrl) {
         if (data.direct) {
           // Direct Download link (like Cobalt) - download directly via same-origin proxy to bypass CORS!
+          targetProgressRef.current = 0;
           setDownloadStatus('downloading');
-          setDownloadProgress(0);
           
           const streamUrl = data.streamUrl;
           const fileName = data.fileName;
@@ -455,7 +519,7 @@ function App() {
               }
 
               const progress = Math.min(Math.round((receivedLength / activeTotal) * 100), 99);
-              setDownloadProgress(progress);
+              targetProgressRef.current = progress;
               
               // Calculate speed
               const elapsedSeconds = (Date.now() - startTime) / 1000;
@@ -472,8 +536,8 @@ function App() {
 
             setCompletedBlobUrl(localDownloadUrl);
             setCompletedFileName(fileName);
+            targetProgressRef.current = 100;
             setDownloadStatus('completed');
-            setDownloadProgress(100);
 
             const downloadLink = document.createElement('a');
             downloadLink.href = localDownloadUrl;
@@ -499,8 +563,8 @@ function App() {
             // Fallback: if browser fetch/cors fails, fall back to simple direct redirect download
             setCompletedBlobUrl(streamUrl);
             setCompletedFileName(fileName);
+            targetProgressRef.current = 100;
             setDownloadStatus('completed');
-            setDownloadProgress(100);
             
             const downloadLink = document.createElement('a');
             downloadLink.href = streamUrl;
@@ -517,8 +581,8 @@ function App() {
 
         if (data.totalSize) {
           // Vercel Serverless / Client-Side Chunked Downloading
+          targetProgressRef.current = 0;
           setDownloadStatus('downloading');
-          setDownloadProgress(0);
           setDownloadSize(`${(data.totalSize / (1024 * 1024)).toFixed(1)} MB`);
           
           const totalSize = data.totalSize;
@@ -539,16 +603,23 @@ function App() {
               throw new Error('Error downloading video chunk. Vercel connection limits exceeded.');
             }
             
-            const chunkBlob = await chunkResponse.blob();
+            const reader = chunkResponse.body.getReader();
+            const chunkChunks = [];
+            while (true) {
+              const { done, value } = await reader.read();
+              if (done) break;
+              chunkChunks.push(value);
+              downloadedBytes += value.length;
+              const progress = Math.min(Math.round((downloadedBytes / totalSize) * 100), 99);
+              targetProgressRef.current = progress;
+              
+              const elapsedSeconds = (Date.now() - startTime) / 1000;
+              const speed = elapsedSeconds > 0 ? (downloadedBytes / (1024 * 1024) / elapsedSeconds).toFixed(1) : '0';
+              setDownloadSpeed(`${(downloadedBytes / (1024 * 1024)).toFixed(1)} MB / ${(totalSize / (1024 * 1024)).toFixed(1)} MB (${speed} MB/s)`);
+            }
+            
+            const chunkBlob = new Blob(chunkChunks);
             chunks.push(chunkBlob);
-            
-            downloadedBytes += (end - start + 1);
-            const progress = Math.round((downloadedBytes / totalSize) * 100);
-            setDownloadProgress(progress);
-            
-            // Show progress details
-            setDownloadSpeed(`${(downloadedBytes / (1024 * 1024)).toFixed(1)} MB / ${(totalSize / (1024 * 1024)).toFixed(1)} MB`);
-            
             start = end + 1;
           }
 
@@ -557,8 +628,8 @@ function App() {
           
           setCompletedBlobUrl(localDownloadUrl);
           setCompletedFileName(fileName);
+          targetProgressRef.current = 100;
           setDownloadStatus('completed');
-          setDownloadProgress(100);
 
           const downloadLink = document.createElement('a');
           downloadLink.href = localDownloadUrl;
@@ -585,6 +656,7 @@ function App() {
 
       const activeJobId = data.jobId;
       setJobId(activeJobId);
+      targetProgressRef.current = 0;
       setDownloadStatus('downloading');
 
       const eventSource = new EventSource(`${API_BASE}/api/progress/${activeJobId}`);
@@ -593,7 +665,7 @@ function App() {
         const jobUpdate = JSON.parse(event.data);
 
         setDownloadStatus(jobUpdate.status);
-        setDownloadProgress(jobUpdate.progress);
+        targetProgressRef.current = jobUpdate.progress;
         setDownloadSpeed(jobUpdate.speed);
         setDownloadEta(jobUpdate.eta);
         setDownloadSize(jobUpdate.size);
@@ -732,8 +804,8 @@ function App() {
     let clientDownloadSuccess = false;
 
     if (success) {
+      targetProgressRef.current = 0;
       setDownloadStatus('downloading');
-      setDownloadProgress(0);
       setDownloadSpeed('Initializing stream...');
       
       let totalSize = 0;
@@ -787,7 +859,7 @@ function App() {
           }
 
           const progress = Math.min(Math.round((receivedLength / activeTotal) * 100), 99);
-          setDownloadProgress(progress);
+          targetProgressRef.current = progress;
 
           const elapsedSeconds = (Date.now() - startTime) / 1000;
           const speed = elapsedSeconds > 0 ? (receivedLength / (1024 * 1024) / elapsedSeconds).toFixed(1) : '0';
@@ -817,17 +889,23 @@ function App() {
               const chunkResponse = await fetch(chunkUrl);
               if (!chunkResponse.ok) throw new Error('Error downloading video chunk via proxy.');
               
-              const chunkBlob = await chunkResponse.blob();
-              chunks.push(chunkBlob);
-              
-              downloadedBytes += (end - start + 1);
-              const progress = Math.min(Math.round((downloadedBytes / totalSize) * 100), 99);
-              setDownloadProgress(progress);
+              const reader = chunkResponse.body.getReader();
+              const chunkChunks = [];
+              while (true) {
+                const { done, value } = await reader.read();
+                if (done) break;
+                chunkChunks.push(value);
+                downloadedBytes += value.length;
+                const progress = Math.min(Math.round((downloadedBytes / totalSize) * 100), 99);
+                targetProgressRef.current = progress;
 
-              const elapsedSeconds = (Date.now() - startTime) / 1000;
-              const speed = elapsedSeconds > 0 ? (downloadedBytes / (1024 * 1024) / elapsedSeconds).toFixed(1) : '0';
-              setDownloadSpeed(`${(downloadedBytes / (1024 * 1024)).toFixed(1)} MB / ${(totalSize / (1024 * 1024)).toFixed(1)} MB (${speed} MB/s)`);
+                const elapsedSeconds = (Date.now() - startTime) / 1000;
+                const speed = elapsedSeconds > 0 ? (downloadedBytes / (1024 * 1024) / elapsedSeconds).toFixed(1) : '0';
+                setDownloadSpeed(`${(downloadedBytes / (1024 * 1024)).toFixed(1)} MB / ${(totalSize / (1024 * 1024)).toFixed(1)} MB (${speed} MB/s)`);
+              }
               
+              const chunkBlob = new Blob(chunkChunks);
+              chunks.push(chunkBlob);
               start = end + 1;
             }
             directFetchSuccess = true;
@@ -847,8 +925,8 @@ function App() {
 
         setCompletedBlobUrl(localDownloadUrl);
         setCompletedFileName(finalFileName);
+        targetProgressRef.current = 100;
         setDownloadStatus('completed');
-        setDownloadProgress(100);
 
         const downloadLink = document.createElement('a');
         downloadLink.href = localDownloadUrl;
@@ -915,9 +993,11 @@ function App() {
       console.error('Error cancelling:', e);
     } finally {
       // Instantly reset download status so user returns to quality panel
+      targetProgressRef.current = 0;
+      displayedProgressRef.current = 0;
+      setDownloadProgress(0);
       setDownloadStatus(null);
       setJobId(null);
-      setDownloadProgress(0);
       setHasRedirected(false);
     }
   };
@@ -951,7 +1031,16 @@ function App() {
 
   // Re-download from history list
   const handleReDownload = (item) => {
-    window.open(item.downloadUrl, '_blank');
+    const fileExt = item.quality === 'audio' ? 'mp3' : 'mp4';
+    const cleanTitle = (item.title || 'Video').replace(/[\\/:*?"<>|]/g, '_');
+    const finalFileName = `[Any Downloader] - ${cleanTitle}.${fileExt}`;
+
+    const downloadLink = document.createElement('a');
+    downloadLink.href = item.downloadUrl;
+    downloadLink.setAttribute('download', finalFileName);
+    document.body.appendChild(downloadLink);
+    downloadLink.click();
+    downloadLink.remove();
   };
 
   const ytId = videoInfo ? getYouTubeId(videoInfo.originalUrl) : null;
@@ -1246,7 +1335,7 @@ function App() {
                   {downloadStatus === 'starting' && 'Initializing download engine...'}
                   {downloadStatus === 'downloading' && 'Downloading high-speed streams...'}
                   {downloadStatus === 'merging' && 'Combining video & audio (MP4)...'}
-                  {downloadStatus === 'completed' && 'Download Ready!'}
+                  {downloadStatus === 'completed' && (downloadProgress < 100 ? 'Finishing transfer...' : 'Download Ready!')}
                   {downloadStatus === 'error' && 'Something went wrong'}
                 </span>
                 {downloadStatus === 'downloading' && (
@@ -1269,7 +1358,7 @@ function App() {
               ></div>
             </div>
 
-            {downloadStatus === 'completed' && (
+            {downloadStatus === 'completed' && downloadProgress === 100 && (
               <div className="success-badge animate-in" style={{ display: 'flex', flexDirection: 'column', gap: '0.75rem', alignItems: 'center', textAlign: 'center' }}>
                 <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', justifyContent: 'center' }}>
                   <CheckCircle size={20} />
