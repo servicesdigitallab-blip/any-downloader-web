@@ -125,7 +125,16 @@ async function downloadStreamAsBlob({
   if (isCobalt) {
     try {
       console.log('Attempting direct browser fetch for Cobalt stream:', streamUrl);
-      const response = await fetch(streamUrl, { signal: AbortSignal.timeout(30000) });
+      
+      const controller = new AbortController();
+      let timeoutId = setTimeout(() => {
+        controller.abort();
+        console.warn('Direct fetch connection timed out.');
+      }, 15000); // 15 seconds initial connection timeout
+
+      const response = await fetch(streamUrl, { signal: controller.signal });
+      clearTimeout(timeoutId);
+
       if (!response.ok) throw new Error(`Direct fetch failed with status ${response.status}`);
 
       const reader = response.body.getReader();
@@ -142,9 +151,22 @@ async function downloadStreamAsBlob({
         setDownloadSize(`${(contentLength / (1024 * 1024)).toFixed(1)} MB`);
       }
 
+      // Start custom activity monitoring timeout (resets on every received chunk)
+      const resetTimeout = () => {
+        clearTimeout(timeoutId);
+        timeoutId = setTimeout(() => {
+          controller.abort();
+          console.warn('Direct fetch stream hung (no data for 15 seconds). Aborting.');
+        }, 15000); // 15 seconds activity timeout
+      };
+
+      resetTimeout();
+
       while (true) {
         const { done, value } = await reader.read();
         if (done) break;
+
+        resetTimeout();
 
         chunks.push(value);
         downloadedBytes += value.length;
@@ -164,6 +186,8 @@ async function downloadStreamAsBlob({
         setDownloadSpeed(`${(downloadedBytes / (1024 * 1024)).toFixed(1)} MB / ${localIsEstimated ? '~' : ''}${totalMbStr} (${speed} MB/s)`);
         setDownloadSize(totalMbStr);
       }
+
+      clearTimeout(timeoutId);
 
       if (downloadedBytes === 0) throw new Error('Downloaded 0 bytes from direct stream.');
 
