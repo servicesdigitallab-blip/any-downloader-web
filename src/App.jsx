@@ -922,7 +922,8 @@ function App() {
           body: JSON.stringify({
             url: videoInfo.originalUrl,
             videoQuality: videoQuality,
-            downloadMode: downloadMode
+            downloadMode: downloadMode,
+            tunnel: true
           }),
           signal: AbortSignal.timeout(3000)
         });
