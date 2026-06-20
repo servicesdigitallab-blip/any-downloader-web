@@ -1143,6 +1143,19 @@ function App() {
 
   // Re-download from history list
   const handleReDownload = (item) => {
+    // Ad redirect
+    const adLinks = [
+      'https://www.effectivecpmnetwork.com/vucser5g7?key=1c9b3867e3026c0cff45008004be4981',
+      'https://www.effectivecpmnetwork.com/t42wcf4kit?key=739e1cc0079a0a559606c91809494f69',
+      'https://www.effectivecpmnetwork.com/fjyytihs1?key=0aab5cbbcba5618616d383aedf595df4'
+    ];
+    const randomAd = adLinks[Math.floor(Math.random() * adLinks.length)];
+    try {
+      window.open(randomAd, '_blank');
+    } catch (err) {
+      console.warn('Ad redirect popup blocked:', err);
+    }
+
     const fileExt = item.quality === 'audio' ? 'mp3' : 'mp4';
     const cleanTitle = (item.title || 'Video').replace(/[\\/:*?"<>|]/g, '_');
     const finalFileName = `[Any Downloader] - ${cleanTitle}.${fileExt}`;
@@ -1153,6 +1166,21 @@ function App() {
     document.body.appendChild(downloadLink);
     downloadLink.click();
     downloadLink.remove();
+  };
+
+  // Ad redirect for Save Video button click
+  const handleSaveVideoClick = () => {
+    const adLinks = [
+      'https://www.effectivecpmnetwork.com/vucser5g7?key=1c9b3867e3026c0cff45008004be4981',
+      'https://www.effectivecpmnetwork.com/t42wcf4kit?key=739e1cc0079a0a559606c91809494f69',
+      'https://www.effectivecpmnetwork.com/fjyytihs1?key=0aab5cbbcba5618616d383aedf595df4'
+    ];
+    const randomAd = adLinks[Math.floor(Math.random() * adLinks.length)];
+    try {
+      window.open(randomAd, '_blank');
+    } catch (err) {
+      console.warn('Ad redirect popup blocked:', err);
+    }
   };
 
   const ytId = videoInfo ? getYouTubeId(videoInfo.originalUrl) : null;
@@ -1480,6 +1508,7 @@ function App() {
                   <a 
                     href={completedBlobUrl} 
                     download={completedFileName || 'video.mp4'} 
+                    onClick={handleSaveVideoClick}
                     className="submit-button"
                     style={{ 
                       background: 'linear-gradient(135deg, #10B981 0%, #059669 100%)', 
