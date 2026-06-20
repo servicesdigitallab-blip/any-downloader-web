@@ -71,7 +71,9 @@ if (!isVercel && !fs.existsSync(DOWNLOADS_DIR)) {
   fs.mkdirSync(DOWNLOADS_DIR, { recursive: true });
 }
 
-app.use(cors());
+app.use(cors({
+  exposedHeaders: ['Content-Length', 'Content-Range']
+}));
 app.use(express.json());
 
 // In-memory jobs store
@@ -809,11 +811,13 @@ app.get('/api/info', async (req, res) => {
                 return res.json(info);
               } catch (ogErr) {
                 console.warn(`All metadata scrapers failed, using generic fallback:`, ogErr.message);
+                const videoId = getYouTubeID(url) || '';
+                const thumbnail = videoId ? `https://i.ytimg.com/vi/${videoId}/hqdefault.jpg` : '';
                 return res.json({
                   title: 'YouTube Video',
                   duration: 'Unknown',
                   duration_raw: 0,
-                  thumbnail: '',
+                  thumbnail,
                   platform: 'youtube',
                   maxHeight: 720,
                   originalUrl: url,

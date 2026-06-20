@@ -123,6 +123,8 @@ function App() {
   const [downloadEta, setDownloadEta] = useState('');
   const [downloadSize, setDownloadSize] = useState('');
   const [downloadError, setDownloadError] = useState(null);
+  const [completedBlobUrl, setCompletedBlobUrl] = useState('');
+  const [completedFileName, setCompletedFileName] = useState('');
 
   // Downloads History State
   const [history, setHistory] = useState([]);
@@ -266,10 +268,12 @@ function App() {
 
     setDownloadStatus('starting');
     setDownloadProgress(0);
-    setDownloadSpeed('');
+    setDownloadSpeed('Initializing download engine...');
     setDownloadEta('');
     setDownloadSize('');
     setDownloadError(null);
+    setCompletedBlobUrl('');
+    setCompletedFileName('');
 
     // Map quality requests for Cobalt
     let videoQuality = '1080';
@@ -290,250 +294,15 @@ function App() {
       }
     }
 
-    let instances = [];
-    try {
-      setDownloadSpeed('Locating download servers...');
-      const instRes = await fetch(`${API_BASE}/api/cobalt-instances`);
-      if (instRes.ok) {
-        const instData = await instRes.json();
-        instances = instData.instances || [];
-      }
-    } catch (e) {
-      console.warn('Failed to fetch dynamic Cobalt instances:', e);
-    }
-
-    if (instances.length === 0) {
-      instances = [
-        'https://api.cobalt.blackcat.sweeux.org',
-        'https://rue-cobalt.xenon.zone',
-        'https://dog.kittycat.boo',
-        'https://cobaltapi.kittycat.boo',
-        'https://fox.kittycat.boo',
-        'https://cobaltapi.cjs.nz',
-        'https://sunny.imput.net',
-        'https://kityune.imput.net',
-        'https://nachos.imput.net',
-        'https://blossom.imput.net',
-        'https://api.dl.woof.monster'
-      ];
-    }
-
-    let success = false;
+    let serverDownloadSuccess = false;
     let cobaltStreamUrl = '';
     let cobaltFileName = '';
 
-    // Query multiple instances in parallel to find the fastest successful one!
-    const targetInstances = instances.slice(0, 8);
-    setDownloadSpeed('Connecting to download servers...');
-
+    // Phase 1: Try server-side download first
     try {
-      const promises = targetInstances.map(async (instance) => {
-        const res = await fetch(instance, {
-          method: 'POST',
-          headers: {
-            'Accept': 'application/json',
-            'Content-Type': 'application/json'
-          },
-          body: JSON.stringify({
-            url: videoInfo.originalUrl,
-            videoQuality: videoQuality,
-            downloadMode: downloadMode
-          }),
-          signal: AbortSignal.timeout(3000) // 3 seconds timeout
-        });
-
-        if (!res.ok) {
-          throw new Error('Not ok');
-        }
-
-        const data = await res.json();
-        if (data && (data.status === 'redirect' || data.status === 'tunnel' || data.url)) {
-          return {
-            url: data.url,
-            filename: data.filename || `download.${selectedQuality === 'audio' ? 'mp3' : 'mp4'}`,
-            instance
-          };
-        } else if (data && data.status === 'picker' && data.picker && data.picker.length > 0) {
-          const item = data.picker.find(p => p.type === 'video') || data.picker[0];
-          return {
-            url: item.url,
-            filename: data.filename || `download.${selectedQuality === 'audio' ? 'mp3' : 'mp4'}`,
-            instance
-          };
-        }
-        throw new Error('Invalid format');
-      });
-
-      const fastestResult = await Promise.any(promises);
-      if (fastestResult) {
-        cobaltStreamUrl = fastestResult.url;
-        cobaltFileName = fastestResult.filename;
-        success = true;
-        console.log('Fastest Cobalt instance resolved:', fastestResult.instance);
-      }
-    } catch (anyErr) {
-      console.warn('All parallel client-side Cobalt checks failed:', anyErr.message);
-    }
-
-    let clientDownloadSuccess = false;
-
-    if (success) {
-      // Start streaming with progress tracking
-      setDownloadStatus('downloading');
-      setDownloadProgress(0);
-      setDownloadSpeed('Initializing stream...');
+      console.log('Attempting server-side download first...');
+      setDownloadSpeed('Resolving video streams on backend...');
       
-      let totalSize = 0;
-      let isEstimated = false;
-
-      try {
-        totalSize = await getUrlTotalSize(cobaltStreamUrl);
-      } catch (e) {
-        console.warn('Could not determine total size of stream:', e);
-      }
-
-      if (!totalSize) {
-        const durationSec = videoInfo.duration_raw || 60;
-        const bitrates = {
-          '4k': 1.875 * 1024 * 1024,
-          '2k': 0.75 * 1024 * 1024,
-          '1080p': 0.375 * 1024 * 1024,
-          '720p': 0.1875 * 1024 * 1024,
-          '480p': 0.1 * 1024 * 1024,
-          '360p': 0.0625 * 1024 * 1024,
-          'audio': 0.02 * 1024 * 1024
-        };
-        const factor = bitrates[selectedQuality] || bitrates['1080p'];
-        totalSize = Math.round(durationSec * factor);
-        isEstimated = true;
-      }
-
-      setDownloadSize(`${isEstimated ? '~' : ''}${(totalSize / (1024 * 1024)).toFixed(1)} MB`);
-
-      let directFetchSuccess = false;
-      const chunks = [];
-
-      try {
-        console.log('Attempting direct browser fetch for:', cobaltStreamUrl);
-        const response = await fetch(cobaltStreamUrl);
-        if (!response.ok) {
-          throw new Error(`Direct fetch returned status ${response.status}`);
-        }
-
-        const reader = response.body.getReader();
-        let receivedLength = 0;
-        const startTime = Date.now();
-
-        while (true) {
-          const { done, value } = await reader.read();
-          if (done) break;
-
-          chunks.push(value);
-          receivedLength += value.length;
-
-          const activeTotal = totalSize || receivedLength;
-          const progress = Math.round((receivedLength / activeTotal) * 100);
-          setDownloadProgress(Math.min(progress, 99)); // Keep at 99% until fully complete
-
-          const elapsedSeconds = (Date.now() - startTime) / 1000;
-          const speed = elapsedSeconds > 0 ? (receivedLength / (1024 * 1024) / elapsedSeconds).toFixed(1) : '0';
-          
-          setDownloadSpeed(`${(receivedLength / (1024 * 1024)).toFixed(1)} MB / ${isEstimated ? '~' : ''}${(totalSize / (1024 * 1024)).toFixed(1)} MB (${speed} MB/s)`);
-        }
-
-        if (receivedLength === 0) {
-          throw new Error('Downloaded 0 bytes from direct stream.');
-        }
-
-        directFetchSuccess = true;
-      } catch (directErr) {
-        console.warn('Direct client-side stream download failed (CORS or network), falling back to chunked proxy download:', directErr.message);
-      }
-
-      if (!directFetchSuccess) {
-        // Fallback 1: Chunked download via our same-origin proxy (only if we have the exact size)
-        if (totalSize > 0 && !isEstimated) {
-          try {
-            console.log('Starting chunked proxy download for:', cobaltStreamUrl);
-            setDownloadSpeed('Downloading via proxy chunks...');
-            const chunkSize = 4 * 1024 * 1024; // 4MB chunks
-            let start = 0;
-            let downloadedBytes = 0;
-            const startTime = Date.now();
-
-            while (start < totalSize) {
-              const end = Math.min(start + chunkSize - 1, totalSize - 1);
-              const chunkUrl = `${API_BASE}/api/chunk?url=${encodeURIComponent(cobaltStreamUrl)}&start=${start}&end=${end}`;
-              
-              const chunkResponse = await fetch(chunkUrl);
-              if (!chunkResponse.ok) {
-                throw new Error('Error downloading video chunk via proxy.');
-              }
-              
-              const chunkBlob = await chunkResponse.blob();
-              chunks.push(chunkBlob);
-              
-              downloadedBytes += (end - start + 1);
-              const progress = Math.round((downloadedBytes / totalSize) * 100);
-              setDownloadProgress(Math.min(progress, 99));
-
-              const elapsedSeconds = (Date.now() - startTime) / 1000;
-              const speed = elapsedSeconds > 0 ? (downloadedBytes / (1024 * 1024) / elapsedSeconds).toFixed(1) : '0';
-              setDownloadSpeed(`${(downloadedBytes / (1024 * 1024)).toFixed(1)} MB / ${(totalSize / (1024 * 1024)).toFixed(1)} MB (${speed} MB/s)`);
-              
-              start = end + 1;
-            }
-            directFetchSuccess = true; // Mark as success so we construct the blob
-          } catch (proxyErr) {
-            console.error('Chunked proxy download failed:', proxyErr.message);
-          }
-        }
-      }
-
-      if (directFetchSuccess && chunks.length > 0) {
-        setDownloadStatus('completed');
-        setDownloadProgress(100);
-
-        const finalBlob = new Blob(chunks, { type: selectedQuality === 'audio' ? 'audio/mpeg' : 'video/mp4' });
-        const localDownloadUrl = URL.createObjectURL(finalBlob);
-
-        // Standardize file name prefix with SaaS name in brackets
-        const fileExt = selectedQuality === 'audio' ? 'mp3' : 'mp4';
-        const cleanTitle = videoInfo.title.replace(/[\\/:*?"<>|]/g, '_');
-        const finalFileName = `[Any Downloader] - ${cleanTitle}.${fileExt}`;
-
-        const downloadLink = document.createElement('a');
-        downloadLink.href = localDownloadUrl;
-        downloadLink.setAttribute('download', finalFileName);
-        document.body.appendChild(downloadLink);
-        downloadLink.click();
-        downloadLink.remove();
-
-        const newHistoryItem = {
-          id: crypto.randomUUID(),
-          title: videoInfo.title,
-          thumbnail: videoInfo.thumbnail,
-          platform: videoInfo.platform,
-          quality: selectedQuality,
-          date: new Date().toLocaleDateString(),
-          downloadUrl: localDownloadUrl
-        };
-        saveHistory([newHistoryItem, ...history]);
-
-        setTimeout(() => URL.revokeObjectURL(localDownloadUrl), 10000);
-        clientDownloadSuccess = true;
-      }
-    }
-
-    if (clientDownloadSuccess) {
-      return;
-    }
-
-    // Server-side fallback if client-side Cobalt loop fails completely
-    console.log('Client-side Cobalt loop failed, falling back to server-side extractors...');
-    setDownloadSpeed('Retrying via server-side extractors...');
-
-    try {
       const data = await safeFetchJson(`${API_BASE}/api/download`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -598,7 +367,14 @@ function App() {
               chunks.push(value);
               receivedLength += value.length;
 
-              const activeTotal = totalBytesForProgress || receivedLength;
+              let activeTotal = totalBytesForProgress || receivedLength;
+              if ((!contentLength || contentLength === 0) && receivedLength >= activeTotal * 0.9) {
+                activeTotal = Math.max(activeTotal, receivedLength + 5 * 1024 * 1024);
+                totalBytesForProgress = activeTotal;
+                displaySize = `~${(activeTotal / (1024 * 1024)).toFixed(1)} MB`;
+                setDownloadSize(displaySize);
+              }
+
               const progress = Math.min(Math.round((receivedLength / activeTotal) * 100), 99);
               setDownloadProgress(progress);
               
@@ -612,11 +388,13 @@ function App() {
               throw new Error('Downloaded 0 bytes from fallback stream.');
             }
 
-            setDownloadStatus('completed');
-            setDownloadProgress(100);
-
             const finalBlob = new Blob(chunks, { type: selectedQuality === 'audio' ? 'audio/mpeg' : 'video/mp4' });
             const localDownloadUrl = URL.createObjectURL(finalBlob);
+
+            setCompletedBlobUrl(localDownloadUrl);
+            setCompletedFileName(fileName);
+            setDownloadStatus('completed');
+            setDownloadProgress(100);
 
             const downloadLink = document.createElement('a');
             downloadLink.href = localDownloadUrl;
@@ -636,11 +414,12 @@ function App() {
               downloadUrl: localDownloadUrl
             };
             saveHistory([newHistoryItem, ...history]);
-
-            setTimeout(() => URL.revokeObjectURL(localDownloadUrl), 10000);
+            serverDownloadSuccess = true;
           } catch (fetchErr) {
             console.error('Direct download proxy stream read failed, falling back to basic download redirect:', fetchErr);
             // Fallback: if browser fetch/cors fails, fall back to simple direct redirect download
+            setCompletedBlobUrl(streamUrl);
+            setCompletedFileName(fileName);
             setDownloadStatus('completed');
             setDownloadProgress(100);
             
@@ -652,78 +431,78 @@ function App() {
             document.body.appendChild(downloadLink);
             downloadLink.click();
             downloadLink.remove();
+            serverDownloadSuccess = true;
           }
           return;
         }
 
         if (data.totalSize) {
           // Vercel Serverless / Client-Side Chunked Downloading
-        setDownloadStatus('downloading');
-        setDownloadProgress(0);
-        setDownloadSize(`${(data.totalSize / (1024 * 1024)).toFixed(1)} MB`);
-        
-        const totalSize = data.totalSize;
-        const streamUrl = data.streamUrl;
-        const fileName = data.fileName;
-        
-        const chunkSize = 4 * 1024 * 1024; // 4MB chunks
-        let start = 0;
-        const chunks = [];
-        let downloadedBytes = 0;
-
-        while (start < totalSize) {
-          const end = Math.min(start + chunkSize - 1, totalSize - 1);
-          const chunkUrl = `${API_BASE}/api/chunk?url=${encodeURIComponent(streamUrl)}&start=${start}&end=${end}`;
+          setDownloadStatus('downloading');
+          setDownloadProgress(0);
+          setDownloadSize(`${(data.totalSize / (1024 * 1024)).toFixed(1)} MB`);
           
-          const chunkResponse = await fetch(chunkUrl);
-          if (!chunkResponse.ok) {
-            throw new Error('Error downloading video chunk. Vercel connection limits exceeded.');
+          const totalSize = data.totalSize;
+          const streamUrl = data.streamUrl;
+          const fileName = data.fileName;
+          
+          const chunkSize = 4 * 1024 * 1024; // 4MB chunks
+          let start = 0;
+          const chunks = [];
+          let downloadedBytes = 0;
+
+          while (start < totalSize) {
+            const end = Math.min(start + chunkSize - 1, totalSize - 1);
+            const chunkUrl = `${API_BASE}/api/chunk?url=${encodeURIComponent(streamUrl)}&start=${start}&end=${end}`;
+            
+            const chunkResponse = await fetch(chunkUrl);
+            if (!chunkResponse.ok) {
+              throw new Error('Error downloading video chunk. Vercel connection limits exceeded.');
+            }
+            
+            const chunkBlob = await chunkResponse.blob();
+            chunks.push(chunkBlob);
+            
+            downloadedBytes += (end - start + 1);
+            const progress = Math.round((downloadedBytes / totalSize) * 100);
+            setDownloadProgress(progress);
+            
+            // Show progress details
+            setDownloadSpeed(`${(downloadedBytes / (1024 * 1024)).toFixed(1)} MB / ${(totalSize / (1024 * 1024)).toFixed(1)} MB`);
+            
+            start = end + 1;
           }
+
+          const finalBlob = new Blob(chunks, { type: selectedQuality === 'audio' ? 'audio/mpeg' : 'video/mp4' });
+          const localDownloadUrl = URL.createObjectURL(finalBlob);
           
-          const chunkBlob = await chunkResponse.blob();
-          chunks.push(chunkBlob);
+          setCompletedBlobUrl(localDownloadUrl);
+          setCompletedFileName(fileName);
+          setDownloadStatus('completed');
+          setDownloadProgress(100);
+
+          const downloadLink = document.createElement('a');
+          downloadLink.href = localDownloadUrl;
+          downloadLink.setAttribute('download', fileName);
+          document.body.appendChild(downloadLink);
+          downloadLink.click();
+          downloadLink.remove();
           
-          downloadedBytes += (end - start + 1);
-          const progress = Math.round((downloadedBytes / totalSize) * 100);
-          setDownloadProgress(progress);
-          
-          // Show progress details
-          setDownloadSpeed(`${(downloadedBytes / (1024 * 1024)).toFixed(1)} MB / ${(totalSize / (1024 * 1024)).toFixed(1)} MB`);
-          
-          start = end + 1;
+          // Add to local history list
+          const newHistoryItem = {
+            id: crypto.randomUUID(),
+            title: videoInfo.title,
+            thumbnail: videoInfo.thumbnail,
+            platform: videoInfo.platform,
+            quality: selectedQuality,
+            date: new Date().toLocaleDateString(),
+            downloadUrl: localDownloadUrl
+          };
+          saveHistory([newHistoryItem, ...history]);
+          serverDownloadSuccess = true;
+          return;
         }
-
-        // Stitched all chunks together
-        setDownloadStatus('completed');
-        setDownloadProgress(100);
-
-        const finalBlob = new Blob(chunks, { type: 'video/mp4' });
-        const localDownloadUrl = URL.createObjectURL(finalBlob);
-        
-        const downloadLink = document.createElement('a');
-        downloadLink.href = localDownloadUrl;
-        downloadLink.setAttribute('download', fileName);
-        document.body.appendChild(downloadLink);
-        downloadLink.click();
-        downloadLink.remove();
-        
-        // Add to local history list
-        const newHistoryItem = {
-          id: crypto.randomUUID(),
-          title: videoInfo.title,
-          thumbnail: videoInfo.thumbnail,
-          platform: videoInfo.platform,
-          quality: selectedQuality,
-          date: new Date().toLocaleDateString(),
-          downloadUrl: localDownloadUrl
-        };
-        saveHistory([newHistoryItem, ...history]);
-
-        // Clean up object URL
-        setTimeout(() => URL.revokeObjectURL(localDownloadUrl), 10000);
-        return;
       }
-    }
 
       const activeJobId = data.jobId;
       setJobId(activeJobId);
@@ -749,9 +528,16 @@ function App() {
           eventSource.close();
           setHasRedirected(false);
           
+          const fileExt = selectedQuality === 'audio' ? 'mp3' : 'mp4';
+          const cleanTitle = videoInfo.title.replace(/[\\/:*?"<>|]/g, '_');
+          const finalFileName = `[Any Downloader] - ${cleanTitle}.${fileExt}`;
+          
+          setCompletedBlobUrl(`${API_BASE}/api/file/${activeJobId}`);
+          setCompletedFileName(finalFileName);
+
           const downloadLink = document.createElement('a');
           downloadLink.href = `${API_BASE}/api/file/${activeJobId}`;
-          downloadLink.setAttribute('download', '');
+          downloadLink.setAttribute('download', finalFileName);
           document.body.appendChild(downloadLink);
           downloadLink.click();
           downloadLink.remove();
@@ -776,35 +562,240 @@ function App() {
         eventSource.close();
       };
 
-    } catch (err) {
-      console.error('Server-side download fallback failed:', err);
-      // Last resort fallback: direct browser redirect to client-resolved Cobalt stream URL (if we have one)
-      if (cobaltStreamUrl) {
-        console.warn('Last resort: redirecting to client-resolved Cobalt stream URL...');
-        setDownloadStatus('completed');
-        setDownloadProgress(100);
-        
+      // Keep this execution path
+      serverDownloadSuccess = true;
+
+    } catch (serverErr) {
+      console.warn('Server-side download pipeline failed, running client-side Cobalt fallback...', serverErr.message);
+    }
+
+    if (serverDownloadSuccess) {
+      return;
+    }
+
+    // Phase 2: Client-side Cobalt fallback
+    let instances = [];
+    try {
+      setDownloadSpeed('Connecting to fallback servers...');
+      const instRes = await fetch(`${API_BASE}/api/cobalt-instances`);
+      if (instRes.ok) {
+        const instData = await instRes.json();
+        instances = instData.instances || [];
+      }
+    } catch (e) {
+      console.warn('Failed to fetch dynamic Cobalt instances:', e);
+    }
+
+    if (instances.length === 0) {
+      instances = [
+        'https://api.cobalt.blackcat.sweeux.org',
+        'https://rue-cobalt.xenon.zone',
+        'https://dog.kittycat.boo',
+        'https://cobaltapi.kittycat.boo',
+        'https://fox.kittycat.boo',
+        'https://cobaltapi.cjs.nz',
+        'https://sunny.imput.net',
+        'https://kityune.imput.net',
+        'https://nachos.imput.net',
+        'https://blossom.imput.net',
+        'https://api.dl.woof.monster'
+      ];
+    }
+
+    let success = false;
+
+    const targetInstances = instances.slice(0, 8);
+    try {
+      const promises = targetInstances.map(async (instance) => {
+        const res = await fetch(instance, {
+          method: 'POST',
+          headers: {
+            'Accept': 'application/json',
+            'Content-Type': 'application/json'
+          },
+          body: JSON.stringify({
+            url: videoInfo.originalUrl,
+            videoQuality: videoQuality,
+            downloadMode: downloadMode
+          }),
+          signal: AbortSignal.timeout(3000)
+        });
+
+        if (!res.ok) throw new Error('Not ok');
+        const data = await res.json();
+        if (data && (data.status === 'redirect' || data.status === 'tunnel' || data.url)) {
+          return {
+            url: data.url,
+            filename: data.filename || `download.${selectedQuality === 'audio' ? 'mp3' : 'mp4'}`,
+            instance
+          };
+        } else if (data && data.status === 'picker' && data.picker && data.picker.length > 0) {
+          const item = data.picker.find(p => p.type === 'video') || data.picker[0];
+          return {
+            url: item.url,
+            filename: data.filename || `download.${selectedQuality === 'audio' ? 'mp3' : 'mp4'}`,
+            instance
+          };
+        }
+        throw new Error('Invalid format');
+      });
+
+      const fastestResult = await Promise.any(promises);
+      if (fastestResult) {
+        cobaltStreamUrl = fastestResult.url;
+        cobaltFileName = fastestResult.filename;
+        success = true;
+      }
+    } catch (anyErr) {
+      console.warn('All parallel client-side Cobalt checks failed:', anyErr.message);
+    }
+
+    let clientDownloadSuccess = false;
+
+    if (success) {
+      setDownloadStatus('downloading');
+      setDownloadProgress(0);
+      setDownloadSpeed('Initializing stream...');
+      
+      let totalSize = 0;
+      let isEstimated = false;
+
+      try {
+        totalSize = await getUrlTotalSize(cobaltStreamUrl);
+      } catch (e) {
+        console.warn('Could not determine total size of stream:', e);
+      }
+
+      if (!totalSize) {
+        const durationSec = videoInfo.duration_raw || 60;
+        const bitrates = {
+          '4k': 1.875 * 1024 * 1024,
+          '2k': 0.75 * 1024 * 1024,
+          '1080p': 0.375 * 1024 * 1024,
+          '720p': 0.1875 * 1024 * 1024,
+          '480p': 0.1 * 1024 * 1024,
+          '360p': 0.0625 * 1024 * 1024,
+          'audio': 0.02 * 1024 * 1024
+        };
+        const factor = bitrates[selectedQuality] || bitrates['1080p'];
+        totalSize = Math.round(durationSec * factor);
+        isEstimated = true;
+      }
+
+      let directFetchSuccess = false;
+      const chunks = [];
+
+      try {
+        console.log('Attempting direct browser fetch for:', cobaltStreamUrl);
+        const response = await fetch(cobaltStreamUrl);
+        if (!response.ok) throw new Error(`Direct fetch returned status ${response.status}`);
+
+        const reader = response.body.getReader();
+        let receivedLength = 0;
+        const startTime = Date.now();
+
+        while (true) {
+          const { done, value } = await reader.read();
+          if (done) break;
+
+          chunks.push(value);
+          receivedLength += value.length;
+
+          let activeTotal = totalSize || receivedLength;
+          if (isEstimated && receivedLength >= activeTotal * 0.9) {
+            activeTotal = Math.max(activeTotal, receivedLength + 5 * 1024 * 1024);
+            totalSize = activeTotal;
+          }
+
+          const progress = Math.min(Math.round((receivedLength / activeTotal) * 100), 99);
+          setDownloadProgress(progress);
+
+          const elapsedSeconds = (Date.now() - startTime) / 1000;
+          const speed = elapsedSeconds > 0 ? (receivedLength / (1024 * 1024) / elapsedSeconds).toFixed(1) : '0';
+          setDownloadSpeed(`${(receivedLength / (1024 * 1024)).toFixed(1)} MB / ${isEstimated ? '~' : ''}${(totalSize / (1024 * 1024)).toFixed(1)} MB (${speed} MB/s)`);
+        }
+
+        if (receivedLength === 0) throw new Error('Downloaded 0 bytes from direct stream.');
+        directFetchSuccess = true;
+      } catch (directErr) {
+        console.warn('Direct client-side stream download failed (CORS or network), falling back to chunked proxy download:', directErr.message);
+      }
+
+      if (!directFetchSuccess) {
+        if (totalSize > 0 && !isEstimated) {
+          try {
+            console.log('Starting chunked proxy download for:', cobaltStreamUrl);
+            setDownloadSpeed('Downloading via proxy chunks...');
+            const chunkSize = 4 * 1024 * 1024;
+            let start = 0;
+            let downloadedBytes = 0;
+            const startTime = Date.now();
+
+            while (start < totalSize) {
+              const end = Math.min(start + chunkSize - 1, totalSize - 1);
+              const chunkUrl = `${API_BASE}/api/chunk?url=${encodeURIComponent(cobaltStreamUrl)}&start=${start}&end=${end}`;
+              
+              const chunkResponse = await fetch(chunkUrl);
+              if (!chunkResponse.ok) throw new Error('Error downloading video chunk via proxy.');
+              
+              const chunkBlob = await chunkResponse.blob();
+              chunks.push(chunkBlob);
+              
+              downloadedBytes += (end - start + 1);
+              const progress = Math.min(Math.round((downloadedBytes / totalSize) * 100), 99);
+              setDownloadProgress(progress);
+
+              const elapsedSeconds = (Date.now() - startTime) / 1000;
+              const speed = elapsedSeconds > 0 ? (downloadedBytes / (1024 * 1024) / elapsedSeconds).toFixed(1) : '0';
+              setDownloadSpeed(`${(downloadedBytes / (1024 * 1024)).toFixed(1)} MB / ${(totalSize / (1024 * 1024)).toFixed(1)} MB (${speed} MB/s)`);
+              
+              start = end + 1;
+            }
+            directFetchSuccess = true;
+          } catch (proxyErr) {
+            console.error('Chunked proxy download failed:', proxyErr.message);
+          }
+        }
+      }
+
+      if (directFetchSuccess && chunks.length > 0) {
+        const finalBlob = new Blob(chunks, { type: selectedQuality === 'audio' ? 'audio/mpeg' : 'video/mp4' });
+        const localDownloadUrl = URL.createObjectURL(finalBlob);
+
         const fileExt = selectedQuality === 'audio' ? 'mp3' : 'mp4';
         const cleanTitle = videoInfo.title.replace(/[\\/:*?"<>|]/g, '_');
         const finalFileName = `[Any Downloader] - ${cleanTitle}.${fileExt}`;
 
+        setCompletedBlobUrl(localDownloadUrl);
+        setCompletedFileName(finalFileName);
+        setDownloadStatus('completed');
+        setDownloadProgress(100);
+
         const downloadLink = document.createElement('a');
-        downloadLink.href = cobaltStreamUrl;
+        downloadLink.href = localDownloadUrl;
         downloadLink.setAttribute('download', finalFileName);
-        downloadLink.setAttribute('target', '_blank');
-        downloadLink.setAttribute('rel', 'noreferrer'); // bypass hotlinking blocks
         document.body.appendChild(downloadLink);
         downloadLink.click();
         downloadLink.remove();
-      } else {
-        setDownloadStatus('error');
-        setDownloadError(err.message || 'Download failed. Please try a different quality or link.');
+
+        const newHistoryItem = {
+          id: crypto.randomUUID(),
+          title: videoInfo.title,
+          thumbnail: videoInfo.thumbnail,
+          platform: videoInfo.platform,
+          quality: selectedQuality,
+          date: new Date().toLocaleDateString(),
+          downloadUrl: localDownloadUrl
+        };
+        saveHistory([newHistoryItem, ...history]);
+        clientDownloadSuccess = true;
       }
     }
-  };
 
-  // Redirection popunder
-  const handleDownloadClick = () => {
+    if (clientDownloadSuccess) {
+      return;
+    }
+
     if (!hasRedirected) {
       const rand = Math.random();
       let redirectUrl = '';
@@ -856,6 +847,8 @@ function App() {
     setJobId(null);
     setDownloadStatus(null);
     setHasRedirected(false);
+    setCompletedBlobUrl('');
+    setCompletedFileName('');
   };
 
   // Delete from history
@@ -986,6 +979,7 @@ function App() {
                     src={videoInfo.thumbnail} 
                     alt={videoInfo.title}
                     className="video-thumbnail"
+                    referrerPolicy="no-referrer"
                   />
                   {videoInfo.duration && videoInfo.duration !== 'Unknown' && (
                     <span className="video-duration">{videoInfo.duration}</span>
@@ -1185,9 +1179,37 @@ function App() {
             </div>
 
             {downloadStatus === 'completed' && (
-              <div className="success-badge animate-in">
-                <CheckCircle size={20} />
-                <span>Your file has been transferred. You can check your downloads folder!</span>
+              <div className="success-badge animate-in" style={{ display: 'flex', flexDirection: 'column', gap: '0.75rem', alignItems: 'center', textAlign: 'center' }}>
+                <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', justifyContent: 'center' }}>
+                  <CheckCircle size={20} />
+                  <span>Your file has been transferred! If it didn't download automatically, save it below:</span>
+                </div>
+                {completedBlobUrl && (
+                  <a 
+                    href={completedBlobUrl} 
+                    download={completedFileName || 'video.mp4'} 
+                    className="submit-button"
+                    style={{ 
+                      background: 'linear-gradient(135deg, #10B981 0%, #059669 100%)', 
+                      color: '#ffffff',
+                      border: 'none',
+                      textDecoration: 'none',
+                      display: 'inline-flex',
+                      alignItems: 'center',
+                      justifyContent: 'center',
+                      gap: '0.5rem',
+                      fontWeight: '600',
+                      boxShadow: '0 4px 12px rgba(16, 185, 129, 0.2)',
+                      padding: '0.75rem 1.5rem',
+                      borderRadius: '8px',
+                      marginTop: '0.25rem',
+                      width: 'auto'
+                    }}
+                  >
+                    <Download size={18} />
+                    Save Video
+                  </a>
+                )}
               </div>
             )}
 
@@ -1300,6 +1322,7 @@ function App() {
                     src={item.thumbnail} 
                     alt={item.title} 
                     className="history-item-thumb"
+                    referrerPolicy="no-referrer"
                   />
                   <div className="history-item-details">
                     <span className="history-item-title" title={item.title}>
@@ -1359,8 +1382,9 @@ function App() {
               <article 
                 key={idx} 
                 className={`blog-card scroll-animate ${isExpanded ? 'active' : ''}`}
-                style={{ transitionDelay: `${idx * 0.05}s` }}
+                style={{ transitionDelay: `${idx * 0.05}s`, cursor: 'pointer' }}
                 id={`blog-post-${idx}`}
+                onClick={() => setExpandedPost(isExpanded ? null : idx)}
               >
                 <div className="blog-meta">
                   <span className="blog-category">{post.category}</span>
@@ -1376,7 +1400,10 @@ function App() {
                 <button 
                   className="read-more-btn"
                   id={`blog-btn-${idx}`}
-                  onClick={() => setExpandedPost(isExpanded ? null : idx)}
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    setExpandedPost(isExpanded ? null : idx);
+                  }}
                 >
                   {isExpanded ? 'Show Less' : 'Read Full Guide'}
                   <ChevronDown className={`btn-arrow-icon ${isExpanded ? 'rotated' : ''}`} size={16} />
