@@ -396,23 +396,52 @@ function parseDurationFromHtml(html) {
   return 0;
 }
 
+// Cache for analyzed URLs to make repeated requests instant
+const infoCache = new Map();
+
+// Clean up cache periodically to avoid memory leaks
+setInterval(() => {
+  if (infoCache.size > 200) {
+    const keys = Array.from(infoCache.keys());
+    for (let i = 0; i < keys.length - 200; i++) {
+      infoCache.delete(keys[i]);
+    }
+  }
+}, 60000);
+
 // Helper: Scrape Open Graph metadata for TikTok/Instagram/Pinterest
 async function scrapeOpenGraphMetadata(url, platform) {
   try {
+    const controller = new AbortController();
     const response = await fetch(url, {
       headers: {
         'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36',
         'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8',
         'Accept-Language': 'en-US,en;q=0.5'
       },
-      signal: AbortSignal.timeout(6000)
+      signal: controller.signal
     });
 
     if (!response.ok) {
       throw new Error(`HTTP status ${response.status}`);
     }
 
-    const html = await response.text();
+    let buffer = '';
+    const decoder = new TextDecoder('utf-8');
+    const maxBytes = 250 * 1024; // 250KB
+    let bytesRead = 0;
+
+    for await (const chunk of response.body) {
+      bytesRead += chunk.length;
+      buffer += decoder.decode(chunk, { stream: true });
+      if (buffer.includes('</head>') || bytesRead >= maxBytes) {
+        break;
+      }
+    }
+
+    controller.abort(); // Cancel remaining download
+
+    const html = buffer;
 
     const ogTitleMatch = html.match(/<meta\s+property=["']og:title["']\s+content=["']([^"']+)["']/i) ||
                         html.match(/<meta\s+content=["']([^"']+)["']\s+property=["']og:title["']/i);
@@ -439,7 +468,9 @@ async function scrapeOpenGraphMetadata(url, platform) {
       tags: []
     };
   } catch (err) {
-    console.warn(`Open Graph metadata scraping failed for ${url}:`, err.message);
+    if (err.name !== 'AbortError') {
+      console.warn(`Open Graph metadata scraping failed for ${url}:`, err.message);
+    }
     throw err;
   }
 }
@@ -588,60 +619,86 @@ function parseISO8601Duration(durationStr) {
 // Helper: Scrape all metadata (duration, description, tags) from YouTube HTML watch page
 async function scrapeYouTubePageMetadata(url) {
   try {
+    const controller = new AbortController();
     const response = await fetch(url, {
       headers: {
         'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36'
       },
-      signal: AbortSignal.timeout(3000)
+      signal: controller.signal
     });
     if (!response.ok) return null;
-    const html = await response.text();
-    
-    // Try ytInitialPlayerResponse first
-    const playerResponseMatch = html.match(/ytInitialPlayerResponse\s*=\s*({.+?});/) || 
-                                 html.match(/var\s+ytInitialPlayerResponse\s*=\s*({.+?});/);
-    if (playerResponseMatch && playerResponseMatch[1]) {
-      try {
-        const playerResponse = JSON.parse(playerResponseMatch[1]);
-        const lengthSeconds = playerResponse.videoDetails?.lengthSeconds;
-        const description = playerResponse.videoDetails?.shortDescription || '';
-        const thumbnails = playerResponse.videoDetails?.thumbnail?.thumbnails || [];
-        const thumbnail = thumbnails.length > 0 ? thumbnails[thumbnails.length - 1].url : '';
-        const title = playerResponse.videoDetails?.title || '';
-        
-        if (lengthSeconds) {
-          return {
-            durationSec: parseInt(lengthSeconds, 10) || 0,
-            description: description.replace(/&amp;/g, '&').replace(/&lt;/g, '<').replace(/&gt;/g, '>').replace(/&quot;/g, '"'),
-            thumbnail,
-            title,
-            tags: playerResponse.videoDetails?.keywords || []
-          };
+
+    let buffer = '';
+    const decoder = new TextDecoder('utf-8');
+    const maxBytes = 350 * 1024; // 350KB
+    let bytesRead = 0;
+    let foundMetadata = null;
+
+    for await (const chunk of response.body) {
+      bytesRead += chunk.length;
+      buffer += decoder.decode(chunk, { stream: true });
+
+      // Check if we have the ytInitialPlayerResponse
+      const playerResponseMatch = buffer.match(/ytInitialPlayerResponse\s*=\s*({.+?});/) || 
+                                   buffer.match(/var\s+ytInitialPlayerResponse\s*=\s*({.+?});/);
+      if (playerResponseMatch && playerResponseMatch[1]) {
+        try {
+          const playerResponse = JSON.parse(playerResponseMatch[1]);
+          const lengthSeconds = playerResponse.videoDetails?.lengthSeconds;
+          const description = playerResponse.videoDetails?.shortDescription || '';
+          const thumbnails = playerResponse.videoDetails?.thumbnail?.thumbnails || [];
+          const thumbnail = thumbnails.length > 0 ? thumbnails[thumbnails.length - 1].url : '';
+          const title = playerResponse.videoDetails?.title || '';
+          
+          if (lengthSeconds) {
+            foundMetadata = {
+              durationSec: parseInt(lengthSeconds, 10) || 0,
+              description: description.replace(/&amp;/g, '&').replace(/&lt;/g, '<').replace(/&gt;/g, '>').replace(/&quot;/g, '"'),
+              thumbnail,
+              title,
+              tags: playerResponse.videoDetails?.keywords || []
+            };
+            break; // Break out of stream read loop
+          }
+        } catch (e) {
+          // JSON parsing failed (incomplete chunk), keep reading
         }
-      } catch (e) {
-        console.warn('Error parsing ytInitialPlayerResponse:', e.message);
+      }
+
+      // If we see </head>, check if we have duration
+      if (buffer.includes('</head>')) {
+        const durationSec = parseDurationFromHtml(buffer);
+        if (durationSec > 0) {
+          const descMatch = buffer.match(/<meta\s+name=["']description["']\s+content=["']([^"']+)["']/i) ||
+                            buffer.match(/<meta\s+property=["']og:description["']\s+content=["']([^"']+)["']/i);
+          const description = descMatch ? descMatch[1] : '';
+          
+          const keywordsMatch = buffer.match(/<meta\s+name=["']keywords["']\s+content=["']([^"']+)["']/i);
+          let tags = [];
+          if (keywordsMatch && keywordsMatch[1]) {
+            tags = keywordsMatch[1].split(',').map(t => t.trim()).filter(Boolean);
+          }
+
+          foundMetadata = {
+            durationSec,
+            description: description.replace(/&amp;/g, '&').replace(/&lt;/g, '<').replace(/&gt;/g, '>').replace(/&quot;/g, '"'),
+            tags
+          };
+          break;
+        }
+      }
+
+      if (bytesRead >= maxBytes) {
+        break;
       }
     }
-    
-    const durationSec = parseDurationFromHtml(html);
-    
-    const descMatch = html.match(/<meta\s+name=["']description["']\s+content=["']([^"']+)["']/i) ||
-                      html.match(/<meta\s+property=["']og:description["']\s+content=["']([^"']+)["']/i);
-    const description = descMatch ? descMatch[1] : '';
-    
-    const keywordsMatch = html.match(/<meta\s+name=["']keywords["']\s+content=["']([^"']+)["']/i);
-    let tags = [];
-    if (keywordsMatch && keywordsMatch[1]) {
-      tags = keywordsMatch[1].split(',').map(t => t.trim()).filter(Boolean);
-    }
-    
-    return {
-      durationSec,
-      description: description.replace(/&amp;/g, '&').replace(/&lt;/g, '<').replace(/&gt;/g, '>').replace(/&quot;/g, '"'),
-      tags
-    };
+
+    controller.abort(); // Cancel the remaining download
+    return foundMetadata;
   } catch (err) {
-    console.warn('Failed to scrape YouTube page metadata:', err.message);
+    if (err.name !== 'AbortError') {
+      console.warn('Failed to scrape YouTube page metadata:', err.message);
+    }
     return null;
   }
 }
@@ -698,11 +755,26 @@ app.get('/api/info', async (req, res) => {
     return res.status(400).json({ error: 'URL parameter is required' });
   }
 
-  if (!isAllowedPlatform(url)) {
+  const cleanUrl = url.trim();
+  if (infoCache.has(cleanUrl)) {
+    console.log(`Serving cached info for: ${cleanUrl}`);
+    return res.json(infoCache.get(cleanUrl));
+  }
+
+  // Intercept res.json to automatically cache successful metadata retrievals
+  const originalJson = res.json.bind(res);
+  res.json = (body) => {
+    if (res.statusCode === 200 && body && !body.error && body.title) {
+      infoCache.set(cleanUrl, body);
+    }
+    return originalJson(body);
+  };
+
+  if (!isAllowedPlatform(cleanUrl)) {
     return res.status(403).json({ error: 'Any Downloader only supports downloads from YouTube, TikTok, Pinterest, and Instagram.' });
   }
 
-  console.log(`Fetching info for URL: ${url}`);
+  console.log(`Fetching info for URL: ${cleanUrl}`);
 
   const isYouTube = url.includes('youtube.com') || url.includes('youtu.be');
   if (isYouTube) {

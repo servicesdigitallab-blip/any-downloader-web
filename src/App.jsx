@@ -266,7 +266,7 @@ function App() {
 
           if (status === 'completed') {
             if (current < 100) {
-              const next = Math.min(100, current + Math.max(1, Math.round((100 - current) / 3)));
+              const next = Math.min(100, current + Math.max(1, Math.round((100 - current) / 4)));
               displayedProgressRef.current = next;
               setDownloadProgress(next);
             } else {
@@ -291,14 +291,22 @@ function App() {
             setDownloadProgress(next);
           } else {
             crawlCounterRef.current += 1;
-            let ticksPerIncrement = 2; // default for 'starting' (every 200ms)
-            let maxCrawl = 25;
+            let ticksPerIncrement = 5; // default for starting < 40 (every 150ms at 30ms interval)
+            let maxCrawl = 95;
 
-            if (status === 'downloading') {
-              ticksPerIncrement = 6; // every 600ms
+            if (status === 'starting') {
+              if (current >= 40 && current < 75) {
+                ticksPerIncrement = 10; // every 300ms
+              } else if (current >= 75 && current < 90) {
+                ticksPerIncrement = 20; // every 600ms
+              } else if (current >= 90) {
+                ticksPerIncrement = 45; // every 1.35s
+              }
+            } else if (status === 'downloading') {
+              ticksPerIncrement = 15; // every 450ms
               maxCrawl = 98;
             } else if (status === 'merging') {
-              ticksPerIncrement = 12; // every 1.2s
+              ticksPerIncrement = 30; // every 900ms
               maxCrawl = 99;
             }
 
@@ -311,21 +319,21 @@ function App() {
               }
             }
           }
-        }, 100);
+        }, 30);
       }
     } else if (downloadStatus === 'completed') {
       if (!smoothProgressIntervalRef.current) {
         smoothProgressIntervalRef.current = setInterval(() => {
           const current = displayedProgressRef.current;
           if (current < 100) {
-            const next = Math.min(100, current + Math.max(1, Math.round((100 - current) / 3)));
+            const next = Math.min(100, current + Math.max(1, Math.round((100 - current) / 4)));
             displayedProgressRef.current = next;
             setDownloadProgress(next);
           } else {
             clearInterval(smoothProgressIntervalRef.current);
             smoothProgressIntervalRef.current = null;
           }
-        }, 100);
+        }, 30);
       }
     } else {
       if (smoothProgressIntervalRef.current) {
