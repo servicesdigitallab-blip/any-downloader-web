@@ -266,7 +266,7 @@ function App() {
 
           if (status === 'completed') {
             if (current < 100) {
-              const next = Math.min(100, current + Math.max(1, Math.round((100 - current) / 4)));
+              const next = Math.min(100, current + 2);
               displayedProgressRef.current = next;
               setDownloadProgress(next);
             } else {
@@ -282,11 +282,11 @@ function App() {
             return;
           }
 
-          // Active download status
+          // Active download status - step up smoothly by at most 1% or 2% per tick to avoid sudden jumps
           if (current < target) {
             const gap = target - current;
-            const increment = Math.max(1, Math.round(gap / 4));
-            const next = Math.min(target, current + increment);
+            const step = gap > 15 ? 2 : 1;
+            const next = Math.min(target, current + step);
             displayedProgressRef.current = next;
             setDownloadProgress(next);
           } else {
@@ -326,7 +326,7 @@ function App() {
         smoothProgressIntervalRef.current = setInterval(() => {
           const current = displayedProgressRef.current;
           if (current < 100) {
-            const next = Math.min(100, current + Math.max(1, Math.round((100 - current) / 4)));
+            const next = Math.min(100, current + 2);
             displayedProgressRef.current = next;
             setDownloadProgress(next);
           } else {
@@ -519,9 +519,9 @@ function App() {
   const handleDownload = async () => {
     if (!videoInfo) return;
 
-    targetProgressRef.current = 0;
-    displayedProgressRef.current = 0;
-    setDownloadProgress(0);
+    targetProgressRef.current = 1;
+    displayedProgressRef.current = 1;
+    setDownloadProgress(1);
     setDownloadStatus('starting');
     setDownloadSpeed('Initializing download engine...');
     setDownloadEta('');
@@ -571,7 +571,7 @@ function App() {
       if (data.streamUrl) {
         if (data.direct) {
           // Direct Download link (like Cobalt) - download directly via same-origin proxy to bypass CORS!
-          targetProgressRef.current = 0;
+          targetProgressRef.current = 1;
           setDownloadStatus('downloading');
           
           const streamUrl = data.streamUrl;
@@ -693,7 +693,7 @@ function App() {
 
         if (data.totalSize) {
           // Vercel Serverless / Client-Side Chunked Downloading
-          targetProgressRef.current = 0;
+          targetProgressRef.current = 1;
           setDownloadStatus('downloading');
           setDownloadSize(`${(data.totalSize / (1024 * 1024)).toFixed(1)} MB`);
           
@@ -768,7 +768,7 @@ function App() {
 
       const activeJobId = data.jobId;
       setJobId(activeJobId);
-      targetProgressRef.current = 0;
+      targetProgressRef.current = 1;
       setDownloadStatus('downloading');
 
       const eventSource = new EventSource(`${API_BASE}/api/progress/${activeJobId}`);
@@ -852,16 +852,16 @@ function App() {
     if (instances.length === 0) {
       instances = [
         'https://api.cobalt.blackcat.sweeux.org',
-        'https://rue-cobalt.xenon.zone',
-        'https://dog.kittycat.boo',
         'https://cobaltapi.kittycat.boo',
+        'https://rue-cobalt.xenon.zone',
         'https://fox.kittycat.boo',
+        'https://dog.kittycat.boo',
         'https://cobaltapi.cjs.nz',
         'https://sunny.imput.net',
         'https://kityune.imput.net',
         'https://nachos.imput.net',
         'https://blossom.imput.net',
-        'https://api.dl.woof.monster'
+        'https://subito-c.meowing.de'
       ];
     }
 
@@ -916,7 +916,7 @@ function App() {
     let clientDownloadSuccess = false;
 
     if (success) {
-      targetProgressRef.current = 0;
+      targetProgressRef.current = 1;
       setDownloadStatus('downloading');
       setDownloadSpeed('Initializing stream...');
       
@@ -1696,6 +1696,63 @@ function App() {
             </span>
           </div>
         )}
+      </section>
+
+      {/* Search Queries Index (SEO Optimization for search bots & users) */}
+      <section id="seo-keywords" className={`keywords-section premium-card scroll-animate ${visibleElements['seo-keywords'] ? 'animate-in' : ''}`} style={{ marginTop: '2rem' }}>
+        <h2 className="section-header-title">
+          <Search className="section-title-icon" size={22} />
+          Supported Search Queries & Platforms Index
+        </h2>
+        <p style={{ fontSize: '0.9rem', color: 'var(--text-muted)', marginBottom: '1.5rem', lineHeight: '1.6' }}>
+          Any Downloader processes direct extraction requests for a variety of popular social media queries and search configurations. You can use our tool directly by pasting links for the following search types:
+        </p>
+        <div className="keywords-grid" style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(220px, 1fr))', gap: '1.5rem' }}>
+          <div className="keyword-card" style={{ background: 'rgba(255,255,255,0.02)', padding: '1.25rem', borderRadius: '12px', border: '1px solid rgba(255,255,255,0.05)', backdropFilter: 'blur(10px)' }}>
+            <h4 style={{ color: 'var(--accent-primary)', marginBottom: '0.75rem', fontWeight: '600', display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
+              <Play size={16} /> YouTube Queries
+            </h4>
+            <ul style={{ listStyle: 'none', padding: 0, margin: 0, fontSize: '0.85rem', color: 'var(--text-secondary)', display: 'flex', flexDirection: 'column', gap: '0.45rem' }}>
+              <li>• youtube download</li>
+              <li>• yotube dowlond (typo search)</li>
+              <li>• yt link to video dowlond</li>
+              <li>• yt dowlond tool</li>
+            </ul>
+          </div>
+          <div className="keyword-card" style={{ background: 'rgba(255,255,255,0.02)', padding: '1.25rem', borderRadius: '12px', border: '1px solid rgba(255,255,255,0.05)', backdropFilter: 'blur(10px)' }}>
+            <h4 style={{ color: 'var(--success)', marginBottom: '0.75rem', fontWeight: '600', display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
+              <Sparkles size={16} /> TikTok Queries
+            </h4>
+            <ul style={{ listStyle: 'none', padding: 0, margin: 0, fontSize: '0.85rem', color: 'var(--text-secondary)', display: 'flex', flexDirection: 'column', gap: '0.45rem' }}>
+              <li>• tiktok video dowlond</li>
+              <li>• tiktok video downloader</li>
+              <li>• tiktok vidw=eo dowlonder</li>
+              <li>• save tiktok no watermark</li>
+            </ul>
+          </div>
+          <div className="keyword-card" style={{ background: 'rgba(255,255,255,0.02)', padding: '1.25rem', borderRadius: '12px', border: '1px solid rgba(255,255,255,0.05)', backdropFilter: 'blur(10px)' }}>
+            <h4 style={{ color: 'var(--accent-secondary)', marginBottom: '0.75rem', fontWeight: '600', display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
+              <Video size={16} /> Instagram Queries
+            </h4>
+            <ul style={{ listStyle: 'none', padding: 0, margin: 0, fontSize: '0.85rem', color: 'var(--text-secondary)', display: 'flex', flexDirection: 'column', gap: '0.45rem' }}>
+              <li>• instagram video dowlond</li>
+              <li>• instagram dowlond online</li>
+              <li>• instagram reels saver</li>
+              <li>• insta video save link</li>
+            </ul>
+          </div>
+          <div className="keyword-card" style={{ background: 'rgba(255,255,255,0.02)', padding: '1.25rem', borderRadius: '12px', border: '1px solid rgba(255,255,255,0.05)', backdropFilter: 'blur(10px)' }}>
+            <h4 style={{ color: '#F59E0B', marginBottom: '0.75rem', fontWeight: '600', display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
+              <Info size={16} /> Pinterest Queries
+            </h4>
+            <ul style={{ listStyle: 'none', padding: 0, margin: 0, fontSize: '0.85rem', color: 'var(--text-secondary)', display: 'flex', flexDirection: 'column', gap: '0.45rem' }}>
+              <li>• pinterest video download</li>
+              <li>• pinterest dowlond online</li>
+              <li>• pinterest video odwlond</li>
+              <li>• save pinterest image/gif</li>
+            </ul>
+          </div>
+        </div>
       </section>
 
       {/* Blog Section (PREMIUM & SEO OPTIMIZED) */}

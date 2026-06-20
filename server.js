@@ -143,14 +143,19 @@ app.get('/api/debug', (req, res) => {
 
 // Helper: Resolve download via community Cobalt API v10 with dynamic scanning
 async function getCobaltInstances() {
+  const verifiedInstances = [
+    'https://api.cobalt.blackcat.sweeux.org',
+    'https://cobaltapi.kittycat.boo',
+    'https://rue-cobalt.xenon.zone'
+  ];
+
   const staticInstances = [
+    'https://api.cobalt.blackcat.sweeux.org',
+    'https://cobaltapi.kittycat.boo',
     'https://rue-cobalt.xenon.zone',
     'https://fox.kittycat.boo',
-    'https://api.cobalt.blackcat.sweeux.org',
     'https://dog.kittycat.boo',
-    'https://cobaltapi.kittycat.boo',
     'https://cobaltapi.cjs.nz',
-    'https://api.dl.woof.monster',
     'https://sunny.imput.net',
     'https://kityune.imput.net',
     'https://nachos.imput.net',
@@ -168,53 +173,30 @@ async function getCobaltInstances() {
     });
     if (res.ok) {
       const html = await res.text();
-      const arraysToParse = ['official', 'community'];
+      const regex = /(apiHost|api):"([^"]+)"/g;
+      let match;
       const scraped = [];
-      
-      for (const arrName of arraysToParse) {
-        const regex = new RegExp(`${arrName}\\s*:\\s*\\[`, 'g');
-        const match = regex.exec(html);
-        if (!match) continue;
-        
-        const startIdx = match.index;
-        const startOffset = match[0].length;
-        
-        let bracketCount = 1;
-        let currentIdx = startIdx + startOffset;
-        let arrayContent = '[';
-        
-        while (bracketCount > 0 && currentIdx < html.length) {
-          const char = html[currentIdx];
-          arrayContent += char;
-          if (char === '[') bracketCount++;
-          else if (char === ']') bracketCount--;
-          currentIdx++;
+      while ((match = regex.exec(html)) !== null) {
+        const host = match[2];
+        const lowercaseHost = host.toLowerCase();
+        // Filter out known private or JWT-requiring instances based on our tests
+        if (
+          lowercaseHost.includes('alpha') ||
+          lowercaseHost.includes('omega') ||
+          lowercaseHost.includes('melon') ||
+          lowercaseHost.includes('grapefruit') ||
+          lowercaseHost.includes('lime') ||
+          lowercaseHost.includes('squair') ||
+          lowercaseHost.includes('qwkuns') ||
+          lowercaseHost.includes('mgytr')
+        ) {
+          continue;
         }
-        
-        try {
-          const fn = new Function(`return ${arrayContent};`);
-          const list = fn() || [];
-          for (const inst of list) {
-            if (inst.api && inst.online !== false) {
-              const youtubeTest = inst.tests && inst.tests.youtube;
-              const isYtWorking = youtubeTest && youtubeTest.status === true;
-              
-              // Skip known private instances that require JWT or have auth/key/jwt messages
-              const message = youtubeTest && youtubeTest.message;
-              const requiresJwt = message && (message.includes('jwt') || message.includes('auth') || message.includes('key'));
-              
-              if (isYtWorking && !requiresJwt) {
-                scraped.push(`https://${inst.api}`);
-              }
-            }
-          }
-        } catch (e) {
-          console.warn(`Failed to parse ${arrName} array:`, e.message);
-        }
+        scraped.push(`https://${host}`);
       }
-      
+
       if (scraped.length > 0) {
-        const combined = [...new Set([...staticInstances, ...scraped])];
+        const combined = [...new Set([...verifiedInstances, ...scraped, ...staticInstances])];
         console.log(`Successfully retrieved ${scraped.length} dynamic Cobalt instances. Total pool: ${combined.length}`);
         return combined;
       }
@@ -226,7 +208,7 @@ async function getCobaltInstances() {
   return staticInstances;
 }
 
-// Helper: Resolve download via community Cobalt API v10
+// Helper: Resolve download via community Cobalt API v10 in parallel
 async function fetchFromCobalt(videoUrl, quality) {
   let videoQuality = '1080';
   let downloadMode = 'auto';
@@ -247,12 +229,12 @@ async function fetchFromCobalt(videoUrl, quality) {
   }
 
   const instances = await getCobaltInstances();
-  // Try at most 4 instances sequentially to avoid Vercel 10s function timeouts
-  const targetInstances = instances.slice(0, 4);
+  // Try up to 8 instances in parallel to prevent sequential timeout stacking
+  const targetInstances = instances.slice(0, 8);
+  console.log(`Querying ${targetInstances.length} Cobalt instances in parallel in backend...`);
 
-  for (const instance of targetInstances) {
+  const promises = targetInstances.map(async (instance) => {
     try {
-      console.log(`Trying Cobalt instance: ${instance} for url: ${videoUrl}`);
       const response = await fetch(instance, {
         method: 'POST',
         headers: {
@@ -265,7 +247,7 @@ async function fetchFromCobalt(videoUrl, quality) {
           videoQuality: videoQuality,
           downloadMode: downloadMode
         }),
-        signal: AbortSignal.timeout(2200) // Fast 2.2s timeout per check
+        signal: AbortSignal.timeout(4000) // Fast 4.0s timeout per instance
       });
 
       if (response.ok) {
@@ -273,24 +255,37 @@ async function fetchFromCobalt(videoUrl, quality) {
         if (data && (data.status === 'redirect' || data.status === 'tunnel' || data.url)) {
           return {
             url: data.url,
-            filename: data.filename || `download.${quality === 'audio' ? 'mp3' : 'mp4'}`
+            filename: data.filename || `download.${quality === 'audio' ? 'mp3' : 'mp4'}`,
+            instance
           };
         } else if (data && data.status === 'picker' && data.picker && data.picker.length > 0) {
           const item = data.picker.find(p => p.type === 'video') || data.picker[0];
           return {
             url: item.url,
-            filename: data.filename || `download.${quality === 'audio' ? 'mp3' : 'mp4'}`
+            filename: data.filename || `download.${quality === 'audio' ? 'mp3' : 'mp4'}`,
+            instance
           };
         }
       } else {
         const errData = await response.json().catch(() => ({}));
-        console.warn(`Cobalt instance ${instance} returned status ${response.status}:`, errData);
+        throw new Error(`Instance ${instance} returned status ${response.status}: ${JSON.stringify(errData)}`);
       }
     } catch (err) {
-      console.warn(`Cobalt instance ${instance} failed:`, err.message);
+      throw err;
     }
+  });
+
+  try {
+    const result = await Promise.any(promises);
+    console.log(`Backend parallel Cobalt fetch succeeded with: ${result.instance}`);
+    return {
+      url: result.url,
+      filename: result.filename
+    };
+  } catch (err) {
+    console.error('All parallel Cobalt instances failed in backend:', err.message);
+    throw new Error('All community Cobalt instances failed to process this video.');
   }
-  throw new Error('All community Cobalt instances failed to process this video.');
 }
 
 // Helper: Get content length of a URL (supporting HEAD and GET with Range fallback)
