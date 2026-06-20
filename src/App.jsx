@@ -569,175 +569,80 @@ function App() {
       });
 
       if (data.streamUrl) {
-        if (data.direct) {
-          // Direct Download link (like Cobalt) - download directly via same-origin proxy to bypass CORS!
-          targetProgressRef.current = 1;
-          setDownloadStatus('downloading');
+        targetProgressRef.current = 1;
+        setDownloadStatus('downloading');
+        
+        const streamUrl = data.streamUrl;
+        const fileName = data.fileName;
+
+        try {
+          // Attempt direct browser fetch from stream URL (bypasses Vercel timeout, uses client bandwidth)
+          // Cobalt instances usually allow CORS on their streams.
+          const response = await fetch(streamUrl);
           
-          const streamUrl = data.streamUrl;
-          const fileName = data.fileName;
-
-          try {
-            // Use same-origin proxy to bypass CORS and expose Content-Length
-            const proxyUrl = `${API_BASE}/api/chunk?url=${encodeURIComponent(streamUrl)}`;
-            const response = await fetch(proxyUrl);
-            if (!response.ok) {
-              throw new Error('Failed to download video from proxy stream.');
-            }
-
-            const reader = response.body.getReader();
-            const contentLength = parseInt(response.headers.get('content-length'), 10) || 0;
-            let displaySize = '';
-            let totalBytesForProgress = contentLength;
-
-            if (contentLength > 0) {
-              displaySize = `${(contentLength / (1024 * 1024)).toFixed(1)} MB`;
-              setDownloadSize(displaySize);
-            } else {
-              const durationSec = videoInfo.duration_raw || 60;
-              const bitrates = {
-                '4k': 1.875 * 1024 * 1024,
-                '2k': 0.75 * 1024 * 1024,
-                '1080p': 0.375 * 1024 * 1024,
-                '720p': 0.1875 * 1024 * 1024,
-                '480p': 0.1 * 1024 * 1024,
-                '360p': 0.0625 * 1024 * 1024,
-                'audio': 0.02 * 1024 * 1024
-              };
-              const factor = bitrates[selectedQuality] || bitrates['1080p'];
-              const estimatedSize = Math.round(durationSec * factor);
-              totalBytesForProgress = estimatedSize;
-              displaySize = `~${(estimatedSize / (1024 * 1024)).toFixed(1)} MB`;
-              setDownloadSize(displaySize);
-            }
-
-            let receivedLength = 0;
-            const chunks = [];
-            const startTime = Date.now();
-
-            while (true) {
-              const { done, value } = await reader.read();
-              if (done) break;
-
-              chunks.push(value);
-              receivedLength += value.length;
-
-              let activeTotal = totalBytesForProgress || receivedLength;
-              if ((!contentLength || contentLength === 0) && receivedLength >= activeTotal * 0.9) {
-                activeTotal = Math.max(activeTotal, receivedLength + 5 * 1024 * 1024);
-                totalBytesForProgress = activeTotal;
-                displaySize = `~${(activeTotal / (1024 * 1024)).toFixed(1)} MB`;
-                setDownloadSize(displaySize);
-              }
-
-              const progress = Math.min(Math.round((receivedLength / activeTotal) * 100), 99);
-              targetProgressRef.current = progress;
-              
-              // Calculate speed
-              const elapsedSeconds = (Date.now() - startTime) / 1000;
-              const speed = elapsedSeconds > 0 ? (receivedLength / (1024 * 1024) / elapsedSeconds).toFixed(1) : '0';
-              setDownloadSpeed(`${(receivedLength / (1024 * 1024)).toFixed(1)} MB / ${displaySize} (${speed} MB/s)`);
-            }
-
-            if (receivedLength === 0) {
-              throw new Error('Downloaded 0 bytes from fallback stream.');
-            }
-
-            const finalBlob = new Blob(chunks, { type: selectedQuality === 'audio' ? 'audio/mpeg' : 'video/mp4' });
-            const localDownloadUrl = URL.createObjectURL(finalBlob);
-
-            setCompletedBlobUrl(localDownloadUrl);
-            setCompletedFileName(fileName);
-            targetProgressRef.current = 100;
-            setDownloadStatus('completed');
-
-            const downloadLink = document.createElement('a');
-            downloadLink.href = localDownloadUrl;
-            downloadLink.setAttribute('download', fileName);
-            document.body.appendChild(downloadLink);
-            downloadLink.click();
-            downloadLink.remove();
-
-            // Add to local history list
-            const newHistoryItem = {
-              id: generateUUID(),
-              title: videoInfo.title,
-              thumbnail: videoInfo.thumbnail,
-              platform: videoInfo.platform,
-              quality: selectedQuality,
-              date: new Date().toLocaleDateString(),
-              downloadUrl: localDownloadUrl
-            };
-            saveHistory([newHistoryItem, ...history]);
-            serverDownloadSuccess = true;
-          } catch (fetchErr) {
-            console.error('Direct download proxy stream read failed, falling back to basic download redirect:', fetchErr);
-            // Fallback: if browser fetch/cors fails, fall back to simple direct redirect download
-            setCompletedBlobUrl(streamUrl);
-            setCompletedFileName(fileName);
-            targetProgressRef.current = 100;
-            setDownloadStatus('completed');
-            
-            const downloadLink = document.createElement('a');
-            downloadLink.href = streamUrl;
-            downloadLink.setAttribute('download', fileName);
-            downloadLink.setAttribute('target', '_blank');
-            downloadLink.setAttribute('rel', 'noreferrer'); // IMPORTANT: bypass hotlinking blocks!
-            document.body.appendChild(downloadLink);
-            downloadLink.click();
-            downloadLink.remove();
-            serverDownloadSuccess = true;
+          if (!response.ok) {
+            throw new Error(`Direct fetch failed with status ${response.status}`);
           }
-          return;
-        }
 
-        if (data.totalSize) {
-          // Vercel Serverless / Client-Side Chunked Downloading
-          targetProgressRef.current = 1;
-          setDownloadStatus('downloading');
-          setDownloadSize(`${(data.totalSize / (1024 * 1024)).toFixed(1)} MB`);
+          const reader = response.body.getReader();
+          const contentLength = parseInt(response.headers.get('content-length'), 10) || data.totalSize || 0;
           
-          const totalSize = data.totalSize;
-          const streamUrl = data.streamUrl;
-          const fileName = data.fileName;
-          
-          const chunkSize = 4 * 1024 * 1024; // 4MB chunks
-          let start = 0;
+          let displaySize = '';
+          let totalBytesForProgress = contentLength;
+
+          if (contentLength > 0) {
+            displaySize = `${(contentLength / (1024 * 1024)).toFixed(1)} MB`;
+            setDownloadSize(displaySize);
+          } else {
+            // Fallback estimation
+            const durationSec = videoInfo.duration_raw || 60;
+            const factor = 0.375 * 1024 * 1024; // approx 1080p
+            const estimatedSize = Math.round(durationSec * factor);
+            totalBytesForProgress = estimatedSize;
+            displaySize = `~${(estimatedSize / (1024 * 1024)).toFixed(1)} MB`;
+            setDownloadSize(displaySize);
+          }
+
+          let receivedLength = 0;
           const chunks = [];
-          let downloadedBytes = 0;
+          const startTime = Date.now();
 
-          while (start < totalSize) {
-            const end = Math.min(start + chunkSize - 1, totalSize - 1);
-            const chunkUrl = `${API_BASE}/api/chunk?url=${encodeURIComponent(streamUrl)}&start=${start}&end=${end}`;
-            
-            const chunkResponse = await fetch(chunkUrl);
-            if (!chunkResponse.ok) {
-              throw new Error('Error downloading video chunk. Vercel connection limits exceeded.');
+          while (true) {
+            const { done, value } = await reader.read();
+            if (done) break;
+
+            chunks.push(value);
+            receivedLength += value.length;
+
+            let activeTotal = totalBytesForProgress || receivedLength;
+            if ((!contentLength || contentLength === 0) && receivedLength >= activeTotal * 0.9) {
+              activeTotal = Math.max(activeTotal, receivedLength + 5 * 1024 * 1024);
+              totalBytesForProgress = activeTotal;
+              displaySize = `~${(activeTotal / (1024 * 1024)).toFixed(1)} MB`;
+              setDownloadSize(displaySize);
             }
+
+            const progress = Math.min(Math.round((receivedLength / activeTotal) * 100), 99);
+            targetProgressRef.current = progress;
             
-            const reader = chunkResponse.body.getReader();
-            const chunkChunks = [];
-            while (true) {
-              const { done, value } = await reader.read();
-              if (done) break;
-              chunkChunks.push(value);
-              downloadedBytes += value.length;
-              const progress = Math.min(Math.round((downloadedBytes / totalSize) * 100), 99);
-              targetProgressRef.current = progress;
-              
-              const elapsedSeconds = (Date.now() - startTime) / 1000;
-              const speed = elapsedSeconds > 0 ? (downloadedBytes / (1024 * 1024) / elapsedSeconds).toFixed(1) : '0';
-              setDownloadSpeed(`${(downloadedBytes / (1024 * 1024)).toFixed(1)} MB / ${(totalSize / (1024 * 1024)).toFixed(1)} MB (${speed} MB/s)`);
-            }
-            
-            const chunkBlob = new Blob(chunkChunks);
-            chunks.push(chunkBlob);
-            start = end + 1;
+            // Calculate speed
+            const elapsedSeconds = (Date.now() - startTime) / 1000;
+            const speed = elapsedSeconds > 0 ? (receivedLength / (1024 * 1024) / elapsedSeconds).toFixed(1) : '0';
+            setDownloadSpeed(`${(receivedLength / (1024 * 1024)).toFixed(1)} MB / ${displaySize} (${speed} MB/s)`);
+          }
+
+          if (receivedLength === 0) {
+            throw new Error('Downloaded 0 bytes.');
+          }
+
+          // Anti-corruption check: if we knew the content length but got less, the stream was cut off
+          if (contentLength > 0 && receivedLength < contentLength) {
+            throw new Error('Download interrupted or incomplete.');
           }
 
           const finalBlob = new Blob(chunks, { type: selectedQuality === 'audio' ? 'audio/mpeg' : 'video/mp4' });
           const localDownloadUrl = URL.createObjectURL(finalBlob);
-          
+
           setCompletedBlobUrl(localDownloadUrl);
           setCompletedFileName(fileName);
           targetProgressRef.current = 100;
@@ -749,7 +654,7 @@ function App() {
           document.body.appendChild(downloadLink);
           downloadLink.click();
           downloadLink.remove();
-          
+
           // Add to local history list
           const newHistoryItem = {
             id: generateUUID(),
@@ -762,8 +667,111 @@ function App() {
           };
           saveHistory([newHistoryItem, ...history]);
           serverDownloadSuccess = true;
-          return;
+
+        } catch (fetchErr) {
+          console.warn('Direct stream fetch failed (CORS or timeout), falling back to server chunk proxy:', fetchErr.message);
+          
+          // Fallback: If direct fetch fails, use chunked Vercel proxy
+          if (data.totalSize) {
+            try {
+              const totalSize = data.totalSize;
+              const chunkSize = 4 * 1024 * 1024; // 4MB chunks
+              let start = 0;
+              const chunks = [];
+              let downloadedBytes = 0;
+              const startTime = Date.now();
+
+              while (start < totalSize) {
+                const end = Math.min(start + chunkSize - 1, totalSize - 1);
+                const chunkUrl = `${API_BASE}/api/chunk?url=${encodeURIComponent(streamUrl)}&start=${start}&end=${end}`;
+                
+                const chunkResponse = await fetch(chunkUrl);
+                if (!chunkResponse.ok) {
+                  throw new Error('Error downloading chunk via proxy.');
+                }
+                
+                const reader = chunkResponse.body.getReader();
+                while (true) {
+                  const { done, value } = await reader.read();
+                  if (done) break;
+                  chunks.push(value);
+                  downloadedBytes += value.length;
+                  const progress = Math.min(Math.round((downloadedBytes / totalSize) * 100), 99);
+                  targetProgressRef.current = progress;
+                  
+                  const elapsedSeconds = (Date.now() - startTime) / 1000;
+                  const speed = elapsedSeconds > 0 ? (downloadedBytes / (1024 * 1024) / elapsedSeconds).toFixed(1) : '0';
+                  setDownloadSpeed(`${(downloadedBytes / (1024 * 1024)).toFixed(1)} MB / ${(totalSize / (1024 * 1024)).toFixed(1)} MB (${speed} MB/s)`);
+                }
+                start = end + 1;
+              }
+
+              if (downloadedBytes < totalSize) {
+                throw new Error('Proxy download incomplete.');
+              }
+
+              const finalBlob = new Blob(chunks, { type: selectedQuality === 'audio' ? 'audio/mpeg' : 'video/mp4' });
+              const localDownloadUrl = URL.createObjectURL(finalBlob);
+              
+              setCompletedBlobUrl(localDownloadUrl);
+              setCompletedFileName(fileName);
+              targetProgressRef.current = 100;
+              setDownloadStatus('completed');
+
+              const downloadLink = document.createElement('a');
+              downloadLink.href = localDownloadUrl;
+              downloadLink.setAttribute('download', fileName);
+              document.body.appendChild(downloadLink);
+              downloadLink.click();
+              downloadLink.remove();
+              
+              const newHistoryItem = {
+                id: generateUUID(),
+                title: videoInfo.title,
+                thumbnail: videoInfo.thumbnail,
+                platform: videoInfo.platform,
+                quality: selectedQuality,
+                date: new Date().toLocaleDateString(),
+                downloadUrl: localDownloadUrl
+              };
+              saveHistory([newHistoryItem, ...history]);
+              serverDownloadSuccess = true;
+            } catch (chunkErr) {
+              console.error('Chunk proxy failed, falling back to direct redirect:', chunkErr.message);
+              setCompletedBlobUrl(streamUrl);
+              setCompletedFileName(fileName);
+              targetProgressRef.current = 100;
+              setDownloadStatus('completed');
+              
+              const downloadLink = document.createElement('a');
+              downloadLink.href = streamUrl;
+              downloadLink.setAttribute('download', fileName);
+              downloadLink.setAttribute('target', '_blank');
+              downloadLink.setAttribute('rel', 'noreferrer');
+              document.body.appendChild(downloadLink);
+              downloadLink.click();
+              downloadLink.remove();
+              serverDownloadSuccess = true;
+            }
+          } else {
+            // Absolute final fallback: Direct redirect
+            setCompletedBlobUrl(streamUrl);
+            setCompletedFileName(fileName);
+            targetProgressRef.current = 100;
+            setDownloadStatus('completed');
+            
+            const downloadLink = document.createElement('a');
+            downloadLink.href = streamUrl;
+            downloadLink.setAttribute('download', fileName);
+            downloadLink.setAttribute('target', '_blank');
+            downloadLink.setAttribute('rel', 'noreferrer');
+            document.body.appendChild(downloadLink);
+            downloadLink.click();
+            downloadLink.remove();
+            serverDownloadSuccess = true;
+          }
         }
+        return;
       }
 
       const activeJobId = data.jobId;
