@@ -597,6 +597,32 @@ async function scrapeYouTubePageMetadata(url) {
     if (!response.ok) return null;
     const html = await response.text();
     
+    // Try ytInitialPlayerResponse first
+    const playerResponseMatch = html.match(/ytInitialPlayerResponse\s*=\s*({.+?});/) || 
+                                 html.match(/var\s+ytInitialPlayerResponse\s*=\s*({.+?});/);
+    if (playerResponseMatch && playerResponseMatch[1]) {
+      try {
+        const playerResponse = JSON.parse(playerResponseMatch[1]);
+        const lengthSeconds = playerResponse.videoDetails?.lengthSeconds;
+        const description = playerResponse.videoDetails?.shortDescription || '';
+        const thumbnails = playerResponse.videoDetails?.thumbnail?.thumbnails || [];
+        const thumbnail = thumbnails.length > 0 ? thumbnails[thumbnails.length - 1].url : '';
+        const title = playerResponse.videoDetails?.title || '';
+        
+        if (lengthSeconds) {
+          return {
+            durationSec: parseInt(lengthSeconds, 10) || 0,
+            description: description.replace(/&amp;/g, '&').replace(/&lt;/g, '<').replace(/&gt;/g, '>').replace(/&quot;/g, '"'),
+            thumbnail,
+            title,
+            tags: playerResponse.videoDetails?.keywords || []
+          };
+        }
+      } catch (e) {
+        console.warn('Error parsing ytInitialPlayerResponse:', e.message);
+      }
+    }
+    
     const durationSec = parseDurationFromHtml(html);
     
     const descMatch = html.match(/<meta\s+name=["']description["']\s+content=["']([^"']+)["']/i) ||
@@ -642,10 +668,10 @@ async function getYouTubeOEmbed(url, force = false) {
   const tags = (pageMeta && pageMeta.tags) || [];
   
   return {
-    title: oEmbedRes.title || 'YouTube Video',
+    title: (pageMeta && pageMeta.title) || oEmbedRes.title || 'YouTube Video',
     duration: durationSec > 0 ? formatDuration(durationSec) : 'Unknown',
     duration_raw: durationSec,
-    thumbnail: oEmbedRes.thumbnail_url || '',
+    thumbnail: (pageMeta && pageMeta.thumbnail) || oEmbedRes.thumbnail_url || '',
     platform: 'youtube',
     maxHeight: 1080,
     originalUrl: url,
@@ -998,7 +1024,14 @@ app.get('/api/chunk', async (req, res) => {
     const body = response.body;
     if (body) {
       const { Readable } = await import('stream');
-      Readable.fromWeb(body).pipe(res);
+      const stream = Readable.fromWeb(body);
+      stream.on('error', (err) => {
+        console.error('Chunk stream read error:', err.message);
+        if (!res.headersSent) {
+          res.status(500).json({ error: 'Failed to read chunk stream.' });
+        }
+      });
+      stream.pipe(res);
     } else {
       res.status(500).json({ error: 'No response body' });
     }
@@ -1019,6 +1052,50 @@ app.get('/api/size', async (req, res) => {
     res.json({ size });
   } catch (err) {
     console.error('Error fetching size:', err);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// GET /api/proxy-image - Proxy an image to bypass CORS and hotlinking blocks
+app.get('/api/proxy-image', async (req, res) => {
+  const { url } = req.query;
+  if (!url) {
+    return res.status(400).json({ error: 'URL parameter is required' });
+  }
+
+  try {
+    const response = await fetch(url, {
+      headers: {
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36',
+        'Accept': 'image/avif,image/webp,image/apng,image/svg+xml,image/*,*/*;q=0.8',
+        'Accept-Language': 'en-US,en;q=0.5'
+      },
+      signal: AbortSignal.timeout(5000)
+    });
+
+    if (!response.ok) {
+      throw new Error(`Upstream returned status ${response.status}`);
+    }
+
+    res.setHeader('Content-Type', response.headers.get('content-type') || 'image/jpeg');
+    res.setHeader('Cache-Control', 'public, max-age=86400'); // Cache for 24h
+
+    const body = response.body;
+    if (body) {
+      const { Readable } = await import('stream');
+      const stream = Readable.fromWeb(body);
+      stream.on('error', (err) => {
+        console.error('Proxy image stream read error:', err.message);
+        if (!res.headersSent) {
+          res.status(500).json({ error: 'Failed to read image stream.' });
+        }
+      });
+      stream.pipe(res);
+    } else {
+      res.status(500).json({ error: 'No response body' });
+    }
+  } catch (err) {
+    console.error('Error proxying image:', err.message);
     res.status(500).json({ error: err.message });
   }
 });
@@ -1318,17 +1395,29 @@ app.post('/api/download', async (req, res) => {
     const output = data.toString();
     console.log(`[Job ${jobId} stdout]: ${output.trim()}`);
 
-    // Parse progress output: [download]  12.5% of 15.00MiB at 4.20MiB/s ETA 00:02
-    const progressRegex = /\[download\]\s+(\d+\.\d+)%\s+of\s+([^\s]+)\s+at\s+([^\s]+)\s+ETA\s+([^\s]+)/;
-    const match = output.match(progressRegex);
+    // Parse progress output: e.g. [download]  12.5% of ~15.00MiB at 4.20MiB/s ETA 00:02
+    // Or [download] 100% of 15.00MiB
+    const pctMatch = output.match(/\[download\]\s+(\d+(?:\.\d+)?)%/);
+    const sizeMatch = output.match(/of\s+(~?\d+(?:\.\d+)?\s*[a-zA-Z]+)/);
+    const speedMatch = output.match(/at\s+([^\s]+)/);
+    const etaMatch = output.match(/ETA\s+([^\s]+)/);
 
-    if (match) {
-      updateJob({
-        progress: parseFloat(match[1]),
-        size: match[2],
-        speed: match[3],
-        eta: match[4]
-      });
+    const update = {};
+    if (pctMatch) {
+      update.progress = parseFloat(pctMatch[1]);
+    }
+    if (sizeMatch) {
+      update.size = sizeMatch[1].replace('~', '');
+    }
+    if (speedMatch) {
+      update.speed = speedMatch[1];
+    }
+    if (etaMatch) {
+      update.eta = etaMatch[1];
+    }
+
+    if (Object.keys(update).length > 0) {
+      updateJob(update);
     }
 
     if (output.includes('[Merger]') || output.includes('Merging formats')) {

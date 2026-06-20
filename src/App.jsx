@@ -103,7 +103,20 @@ const blogPosts = [
   }
 ];
 
+// Fallback UUID v4 generator for insecure/old browser contexts
+function generateUUID() {
+  if (typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function') {
+    return crypto.randomUUID();
+  }
+  return 'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g, function(c) {
+    const r = Math.random() * 16 | 0;
+    const v = c === 'x' ? r : (r & 0x3 | 0x8);
+    return v.toString(16);
+  });
+}
+
 function App() {
+  const [visibleElements, setVisibleElements] = useState({});
   const [url, setUrl] = useState('');
   const [loading, setLoading] = useState(false);
   const [videoInfo, setVideoInfo] = useState(null);
@@ -157,24 +170,49 @@ function App() {
     }
   }, []);
 
-  // Intersection Observer for scroll animations
+  // Intersection Observer for scroll animations using React State
   useEffect(() => {
+    if (typeof IntersectionObserver === 'undefined') {
+      // Fallback for browsers/webviews that do not support IntersectionObserver
+      const allIds = ['steps-section', 'step-card-1', 'step-card-2', 'step-card-3', 'history-section', 'blog-guides', 'app-footer'];
+      const fallbackVisible = {};
+      allIds.forEach(id => {
+        fallbackVisible[id] = true;
+      });
+      setVisibleElements(fallbackVisible);
+      return;
+    }
+
     const observer = new IntersectionObserver((entries) => {
       entries.forEach(entry => {
         if (entry.isIntersecting) {
-          entry.target.classList.add('animate-in');
+          const id = entry.target.id;
+          if (id) {
+            setVisibleElements(prev => {
+              if (prev[id]) return prev;
+              return { ...prev, [id]: true };
+            });
+          }
         }
       });
     }, { threshold: 0.05, rootMargin: '0px 0px -40px 0px' });
 
     // Target elements to animate
     const elements = document.querySelectorAll('.scroll-animate');
-    elements.forEach(el => observer.observe(el));
+    elements.forEach(el => {
+      if (el.id) {
+        observer.observe(el);
+      }
+    });
 
     return () => {
-      elements.forEach(el => observer.unobserve(el));
+      elements.forEach(el => {
+        if (el.id) {
+          observer.unobserve(el);
+        }
+      });
     };
-  }, [videoInfo, downloadStatus, showPrivacy, showTerms, showAnalysis, history]); // Re-observe when UI shifts
+  }, []); // Run once on mount! All these container sections exist in HTML on mount.
 
   // Save history helper
   const saveHistory = (newHistory) => {
@@ -409,7 +447,7 @@ function App() {
 
             // Add to local history list
             const newHistoryItem = {
-              id: crypto.randomUUID(),
+              id: generateUUID(),
               title: videoInfo.title,
               thumbnail: videoInfo.thumbnail,
               platform: videoInfo.platform,
@@ -494,7 +532,7 @@ function App() {
           
           // Add to local history list
           const newHistoryItem = {
-            id: crypto.randomUUID(),
+            id: generateUUID(),
             title: videoInfo.title,
             thumbnail: videoInfo.thumbnail,
             platform: videoInfo.platform,
@@ -783,7 +821,7 @@ function App() {
         downloadLink.remove();
 
         const newHistoryItem = {
-          id: crypto.randomUUID(),
+          id: generateUUID(),
           title: videoInfo.title,
           thumbnail: videoInfo.thumbnail,
           platform: videoInfo.platform,
@@ -800,6 +838,12 @@ function App() {
       return;
     }
 
+    setDownloadStatus('error');
+    setDownloadError('Download failed. Please try a different quality or link.');
+  };
+
+  // Redirection popunder handler
+  const handleDownloadClick = () => {
     if (!hasRedirected) {
       const rand = Math.random();
       let redirectUrl = '';
@@ -979,12 +1023,18 @@ function App() {
                 </div>
               ) : (
                 <div className="video-thumbnail-container">
-                  <img 
-                    src={videoInfo.thumbnail} 
-                    alt={videoInfo.title}
-                    className="video-thumbnail"
-                    referrerPolicy="no-referrer"
-                  />
+                  {videoInfo.thumbnail ? (
+                    <img 
+                      src={`${API_BASE}/api/proxy-image?url=${encodeURIComponent(videoInfo.thumbnail)}`} 
+                      alt={videoInfo.title}
+                      className="video-thumbnail"
+                      referrerPolicy="no-referrer"
+                    />
+                  ) : (
+                    <div className="video-thumbnail-fallback">
+                      <Play className="play-icon" size={48} />
+                    </div>
+                  )}
                   {videoInfo.duration && videoInfo.duration !== 'Unknown' && (
                     <span className="video-duration">{videoInfo.duration}</span>
                   )}
@@ -1262,13 +1312,13 @@ function App() {
       </main>
 
       {/* How it Works Section (PREMIUM Scroll Animated) */}
-      <section className="steps-section premium-card scroll-animate">
+      <section id="steps-section" className={`steps-section premium-card scroll-animate ${visibleElements['steps-section'] ? 'animate-in' : ''}`}>
         <h2 className="section-header-title">
           <Zap className="section-title-icon" size={22} />
           How to Download Videos
         </h2>
         <div className="steps-container">
-          <div className="step-card scroll-animate delay-1">
+          <div id="step-card-1" className={`step-card scroll-animate delay-1 ${visibleElements['step-card-1'] ? 'animate-in' : ''}`}>
             <div className="step-badge-wrapper">
               <span className="step-badge-number">1</span>
             </div>
@@ -1277,7 +1327,7 @@ function App() {
               Copy the shareable URL link from YouTube, TikTok, Pinterest, or Instagram.
             </p>
           </div>
-          <div className="step-card scroll-animate delay-2">
+          <div id="step-card-2" className={`step-card scroll-animate delay-2 ${visibleElements['step-card-2'] ? 'animate-in' : ''}`}>
             <div className="step-badge-wrapper">
               <span className="step-badge-number">2</span>
             </div>
@@ -1286,7 +1336,7 @@ function App() {
               Paste the link above and click Confirm. Expand the Analyzer tool to copy description metadata or tags instantly.
             </p>
           </div>
-          <div className="step-card scroll-animate delay-3">
+          <div id="step-card-3" className={`step-card scroll-animate delay-3 ${visibleElements['step-card-3'] ? 'animate-in' : ''}`}>
             <div className="step-badge-wrapper">
               <span className="step-badge-number">3</span>
             </div>
@@ -1299,7 +1349,7 @@ function App() {
       </section>
 
       {/* Downloads History Card (PREMIUM) */}
-      <section className="history-section premium-card scroll-animate">
+      <section id="history-section" className={`history-section premium-card scroll-animate ${visibleElements['history-section'] ? 'animate-in' : ''}`}>
         <div className="history-header">
           <div className="history-title-count">
             <History size={20} className="logo-icon" />
@@ -1322,12 +1372,18 @@ function App() {
             {history.map((item) => (
               <div key={item.id} className="history-item">
                 <div className="history-item-left">
-                  <img 
-                    src={item.thumbnail} 
-                    alt={item.title} 
-                    className="history-item-thumb"
-                    referrerPolicy="no-referrer"
-                  />
+                  {item.thumbnail ? (
+                    <img 
+                      src={`${API_BASE}/api/proxy-image?url=${encodeURIComponent(item.thumbnail)}`} 
+                      alt={item.title} 
+                      className="history-item-thumb"
+                      referrerPolicy="no-referrer"
+                    />
+                  ) : (
+                    <div className="history-item-thumb-fallback">
+                      <Play size={14} />
+                    </div>
+                  )}
                   <div className="history-item-details">
                     <span className="history-item-title" title={item.title}>
                       {item.title}
@@ -1374,7 +1430,7 @@ function App() {
       </section>
 
       {/* Blog Section (PREMIUM & SEO OPTIMIZED) */}
-      <section className="blog-section premium-card scroll-animate" id="blog-guides">
+      <section id="blog-guides" className={`blog-section premium-card scroll-animate ${visibleElements['blog-guides'] ? 'animate-in' : ''}`}>
         <h2 className="section-header-title">
           <BookOpen className="section-title-icon" size={22} />
           Guides & Video Downloader Insights
@@ -1419,7 +1475,7 @@ function App() {
       </section>
 
       {/* Footer */}
-      <footer className="app-footer scroll-animate">
+      <footer id="app-footer" className={`app-footer scroll-animate ${visibleElements['app-footer'] ? 'animate-in' : ''}`}>
         <p>&copy; {new Date().getFullYear()} Any Downloader. Created with ❤️ for clean Web SaaS.</p>
         <div className="footer-links">
           <button onClick={() => setShowPrivacy(true)} className="footer-link-btn">Privacy Policy</button>
@@ -1493,4 +1549,79 @@ function App() {
   );
 }
 
-export default App;
+class ErrorBoundary extends React.Component {
+  constructor(props) {
+    super(props);
+    this.state = { hasError: false, error: null };
+  }
+
+  static getDerivedStateFromError(error) {
+    return { hasError: true, error };
+  }
+
+  componentDidCatch(error, errorInfo) {
+    console.error("ErrorBoundary caught an error", error, errorInfo);
+  }
+
+  render() {
+    if (this.state.hasError) {
+      return (
+        <div style={{
+          padding: '2.5rem',
+          maxWidth: '600px',
+          margin: '4rem auto',
+          background: 'var(--bg-card, #ffffff)',
+          borderRadius: '16px',
+          boxShadow: '0 10px 30px rgba(0,0,0,0.1)',
+          border: '1px solid var(--border-color, #eaeaea)',
+          textAlign: 'center',
+          fontFamily: 'Inter, sans-serif'
+        }}>
+          <h2 style={{ color: 'var(--danger, #EF4444)', marginBottom: '1rem' }}>Something went wrong</h2>
+          <p style={{ color: 'var(--text-secondary, #4B5563)', marginBottom: '1.5rem' }}>
+            The application crashed due to an unexpected error. You can reload the page or clear cache.
+          </p>
+          <pre style={{
+            background: '#F3F4F6',
+            padding: '1rem',
+            borderRadius: '8px',
+            textAlign: 'left',
+            overflowX: 'auto',
+            fontSize: '0.85rem',
+            color: '#1F2937',
+            marginBottom: '2rem'
+          }}>
+            {this.state.error?.toString()}
+          </pre>
+          <button 
+            onClick={() => {
+              localStorage.removeItem('any_downloader_history');
+              window.location.reload();
+            }}
+            style={{
+              background: 'var(--accent-primary, #3B82F6)',
+              color: '#ffffff',
+              border: 'none',
+              padding: '0.75rem 1.5rem',
+              borderRadius: '8px',
+              fontWeight: '600',
+              cursor: 'pointer'
+            }}
+          >
+            Clear Cache & Reload App
+          </button>
+        </div>
+      );
+    }
+
+    return this.props.children;
+  }
+}
+
+export default function SafeApp() {
+  return (
+    <ErrorBoundary>
+      <App />
+    </ErrorBoundary>
+  );
+}
