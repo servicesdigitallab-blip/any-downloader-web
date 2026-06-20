@@ -131,11 +131,12 @@ async function downloadStreamAsBlob({
       const reader = response.body.getReader();
       
       // Check both content-length and estimated-content-length from Cobalt exposed CORS headers
-      let contentLength = parseInt(response.headers.get('content-length'), 10) || 
+      let exactLength = parseInt(response.headers.get('content-length'), 10) || 0;
+      let contentLength = exactLength || 
                           parseInt(response.headers.get('estimated-content-length'), 10) || 
                           totalSize || 0;
       let activeTotal = contentLength;
-      let localIsEstimated = !contentLength;
+      let localIsEstimated = !exactLength;
 
       if (contentLength > 0) {
         setDownloadSize(`${(contentLength / (1024 * 1024)).toFixed(1)} MB`);
@@ -166,8 +167,8 @@ async function downloadStreamAsBlob({
 
       if (downloadedBytes === 0) throw new Error('Downloaded 0 bytes from direct stream.');
 
-      // Anti-corruption check
-      if (contentLength > 0 && downloadedBytes < contentLength) {
+      // Anti-corruption check (only if exact content-length header was sent by server)
+      if (exactLength > 0 && downloadedBytes < exactLength) {
         throw new Error('Download interrupted or incomplete.');
       }
 
@@ -776,6 +777,7 @@ function App() {
             thumbnail: videoInfo.thumbnail,
             platform: videoInfo.platform,
             quality: selectedQuality,
+            size: downloadSize,
             date: new Date().toLocaleDateString(),
             downloadUrl: localDownloadUrl
           };
@@ -855,6 +857,7 @@ function App() {
             thumbnail: videoInfo.thumbnail,
             platform: videoInfo.platform,
             quality: selectedQuality,
+            size: jobUpdate.size || downloadSize,
             date: new Date().toLocaleDateString(),
             downloadUrl: `${API_BASE}/api/file/${activeJobId}`
           };
@@ -1018,6 +1021,7 @@ function App() {
           thumbnail: videoInfo.thumbnail,
           platform: videoInfo.platform,
           quality: selectedQuality,
+          size: downloadSize,
           date: new Date().toLocaleDateString(),
           downloadUrl: localDownloadUrl
         };
@@ -1493,6 +1497,11 @@ function App() {
                   <CheckCircle size={20} />
                   <span>Your file has been transferred! If it didn't download automatically, save it below:</span>
                 </div>
+                {downloadSize && (
+                  <div style={{ fontSize: '0.95rem', color: 'var(--text-secondary)' }}>
+                    File Size: <strong style={{ color: 'var(--success)' }}>{downloadSize}</strong>
+                  </div>
+                )}
                 {completedBlobUrl && (
                   <a 
                     href={completedBlobUrl} 
@@ -1651,6 +1660,12 @@ function App() {
                       <span style={{ textTransform: 'capitalize' }}>{item.platform}</span>
                       <span>•</span>
                       <span style={{ textTransform: 'uppercase', fontWeight: 600 }}>{item.quality}</span>
+                      {item.size && (
+                        <>
+                          <span>•</span>
+                          <span>{item.size}</span>
+                        </>
+                      )}
                       <span>•</span>
                       <span>{item.date}</span>
                     </span>
