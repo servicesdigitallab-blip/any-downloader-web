@@ -122,7 +122,7 @@ async function downloadStreamAsBlob({
   // Try direct browser fetch first (works if stream has CORS allowed)
   try {
     console.log('Attempting direct browser fetch for:', streamUrl);
-    const response = await fetch(streamUrl);
+    const response = await fetch(streamUrl, { signal: AbortSignal.timeout(15000) });
     if (!response.ok) throw new Error(`Direct fetch failed with status ${response.status}`);
 
     const reader = response.body.getReader();
@@ -186,7 +186,7 @@ async function downloadStreamAsBlob({
       const chunkUrl = `${API_BASE}/api/chunk?url=${encodeURIComponent(streamUrl)}&start=${start}&end=${actualEnd}`;
 
       try {
-        const chunkResponse = await fetch(chunkUrl);
+        const chunkResponse = await fetch(chunkUrl, { signal: AbortSignal.timeout(15000) });
         if (!chunkResponse.ok) {
           if (start > 0) {
             console.log("Chunk request failed (likely reached end of stream):", chunkResponse.status);
@@ -745,6 +745,8 @@ function App() {
           setCompletedBlobUrl(localDownloadUrl);
           setCompletedFileName(fileName);
           targetProgressRef.current = 100;
+          displayedProgressRef.current = 100;
+          setDownloadProgress(100);
           setDownloadStatus('completed');
 
           const downloadLink = document.createElement('a');
@@ -773,6 +775,8 @@ function App() {
           setCompletedBlobUrl(streamUrl);
           setCompletedFileName(fileName);
           targetProgressRef.current = 100;
+          displayedProgressRef.current = 100;
+          setDownloadProgress(100);
           setDownloadStatus('completed');
           
           const downloadLink = document.createElement('a');
@@ -819,6 +823,10 @@ function App() {
           
           setCompletedBlobUrl(`${API_BASE}/api/file/${activeJobId}`);
           setCompletedFileName(finalFileName);
+          targetProgressRef.current = 100;
+          displayedProgressRef.current = 100;
+          setDownloadProgress(100);
+          setDownloadStatus('completed');
 
           const downloadLink = document.createElement('a');
           downloadLink.href = `${API_BASE}/api/file/${activeJobId}`;
@@ -988,6 +996,8 @@ function App() {
         setCompletedBlobUrl(localDownloadUrl);
         setCompletedFileName(finalFileName);
         targetProgressRef.current = 100;
+        displayedProgressRef.current = 100;
+        setDownloadProgress(100);
         setDownloadStatus('completed');
 
         const downloadLink = document.createElement('a');
@@ -1019,6 +1029,8 @@ function App() {
         setCompletedBlobUrl(cobaltStreamUrl);
         setCompletedFileName(finalFileName);
         targetProgressRef.current = 100;
+        displayedProgressRef.current = 100;
+        setDownloadProgress(100);
         setDownloadStatus('completed');
         
         const downloadLink = document.createElement('a');
