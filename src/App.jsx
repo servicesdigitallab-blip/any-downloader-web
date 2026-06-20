@@ -949,10 +949,9 @@ function App() {
           body: JSON.stringify({
             url: videoInfo.originalUrl,
             videoQuality: videoQuality,
-            downloadMode: downloadMode,
-            tunnel: true
+            downloadMode: downloadMode
           }),
-          signal: AbortSignal.timeout(3000)
+          signal: AbortSignal.timeout(10000)
         });
 
         if (!res.ok) throw new Error('Not ok');
