@@ -115,6 +115,110 @@ function generateUUID() {
   });
 }
 
+// Ads Block Component for displaying CPM Network ads above "How to Download"
+function AdsBlock() {
+  useEffect(() => {
+    const ad1Container = document.getElementById('container-9559de34d01e457825192254e2a34176');
+    if (ad1Container && ad1Container.innerHTML === '') {
+      const script1 = document.createElement('script');
+      script1.async = true;
+      script1.setAttribute('data-cfasync', 'false');
+      script1.src = 'https://pl29811313.effectivecpmnetwork.com/9559de34d01e457825192254e2a34176/invoke.js';
+      ad1Container.appendChild(script1);
+    }
+
+    const ad2Container = document.getElementById('ad2-container');
+    if (ad2Container && ad2Container.innerHTML === '') {
+      window.atOptions = {
+        'key' : '745e550024e015ae0395dcab4bb66ee9',
+        'format' : 'iframe',
+        'height' : 250,
+        'width' : 300,
+        'params' : {}
+      };
+      const script2 = document.createElement('script');
+      script2.src = 'https://www.highperformanceformat.com/745e550024e015ae0395dcab4bb66ee9/invoke.js';
+      ad2Container.appendChild(script2);
+    }
+  }, []);
+
+  return (
+    <div 
+      className="ads-wrapper"
+      style={{
+        display: 'flex',
+        flexDirection: 'column',
+        alignItems: 'center',
+        width: '100%',
+        margin: '2.5rem 0 1rem 0',
+        gap: '0.75rem'
+      }}
+    >
+      <span style={{ 
+        fontSize: '0.75rem', 
+        color: 'var(--text-secondary)', 
+        opacity: 0.6,
+        letterSpacing: '0.05em',
+        textTransform: 'uppercase',
+        fontWeight: '600'
+      }}>
+        Sponsored Links
+      </span>
+      <div 
+        className="ads-row" 
+        style={{ 
+          display: 'flex', 
+          justifyContent: 'center', 
+          alignItems: 'center', 
+          gap: '1.5rem', 
+          flexWrap: 'wrap', 
+          width: '100%'
+        }}
+      >
+        <div 
+          id="container-9559de34d01e457825192254e2a34176" 
+          style={{ 
+            width: '300px', 
+            height: '250px', 
+            background: 'rgba(255,255,255,0.02)', 
+            borderRadius: '12px',
+            border: '1px solid var(--border-color)',
+            display: 'flex',
+            justifyContent: 'center',
+            alignItems: 'center',
+            minWidth: '300px',
+            minHeight: '250px',
+            overflow: 'hidden',
+            boxShadow: '0 4px 20px rgba(0,0,0,0.15)'
+          }}
+        >
+          {/* Ad 1 will inject here */}
+        </div>
+
+        <div 
+          id="ad2-container" 
+          style={{ 
+            width: '300px', 
+            height: '250px', 
+            background: 'rgba(255,255,255,0.02)', 
+            borderRadius: '12px',
+            border: '1px solid var(--border-color)',
+            display: 'flex',
+            justifyContent: 'center',
+            alignItems: 'center',
+            minWidth: '300px',
+            minHeight: '250px',
+            overflow: 'hidden',
+            boxShadow: '0 4px 20px rgba(0,0,0,0.15)'
+          }}
+        >
+          {/* Ad 2 will inject here */}
+        </div>
+      </div>
+    </div>
+  );
+}
+
 function App() {
   const [visibleElements, setVisibleElements] = useState({});
   const [url, setUrl] = useState('');
@@ -1436,6 +1540,8 @@ function App() {
           </div>
         )}
       </main>
+
+      <AdsBlock />
 
       {/* How it Works Section (PREMIUM Scroll Animated) */}
       <section id="steps-section" className={`steps-section premium-card scroll-animate ${visibleElements['steps-section'] ? 'animate-in' : ''}`}>
