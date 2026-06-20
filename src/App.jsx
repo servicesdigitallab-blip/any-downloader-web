@@ -118,6 +118,42 @@ function generateUUID() {
 function App() {
   const [visibleElements, setVisibleElements] = useState({});
   const [url, setUrl] = useState('');
+
+  const fakeProgressRef = React.useRef(null);
+
+  const startFakeProgress = () => {
+    if (fakeProgressRef.current) {
+      clearInterval(fakeProgressRef.current);
+    }
+    let val = 0;
+    fakeProgressRef.current = setInterval(() => {
+      val += 1;
+      if (val >= 25) {
+        clearInterval(fakeProgressRef.current);
+      } else {
+        setDownloadProgress(val);
+      }
+    }, 200); // Increment 1% every 200ms up to 25% during "Initializing..."
+  };
+
+  const clearFakeProgress = () => {
+    if (fakeProgressRef.current) {
+      clearInterval(fakeProgressRef.current);
+      fakeProgressRef.current = null;
+    }
+  };
+
+  // Automatically clear fake progress if status is no longer 'starting'
+  useEffect(() => {
+    if (downloadStatus !== 'starting') {
+      clearFakeProgress();
+    }
+    return () => {
+      if (fakeProgressRef.current) {
+        clearInterval(fakeProgressRef.current);
+      }
+    };
+  }, [downloadStatus]);
   const [loading, setLoading] = useState(false);
   const [videoInfo, setVideoInfo] = useState(null);
   const [error, setError] = useState(null);
@@ -309,6 +345,7 @@ function App() {
     if (!videoInfo) return;
 
     setDownloadStatus('starting');
+    startFakeProgress();
     setDownloadProgress(0);
     setDownloadSpeed('Initializing download engine...');
     setDownloadEta('');
