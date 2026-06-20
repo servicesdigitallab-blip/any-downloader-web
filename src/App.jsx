@@ -197,6 +197,7 @@ function App() {
 
   // Extract YouTube ID
   const getYouTubeId = (urlString) => {
+    if (!urlString || typeof urlString !== 'string') return null;
     const regExp = /^.*(youtu.be\/|v\/|u\/\w\/|embed\/|watch\?v=|\&v=)([^#\&\?]*).*/;
     const match = urlString.match(regExp);
     return (match && match[2].length === 11) ? match[2] : null;
@@ -246,6 +247,9 @@ function App() {
 
     try {
       const data = await safeFetchJson(`${API_BASE}/api/info?url=${encodeURIComponent(url.trim())}`);
+      if (!data || data.error || !data.title) {
+        throw new Error((data && data.error) || 'Failed to retrieve video details. Make sure the link is public and valid.');
+      }
       setVideoInfo(data);
       if (data.maxHeight) {
         if (data.maxHeight >= 2160) setSelectedQuality('4k');
@@ -529,7 +533,7 @@ function App() {
           setHasRedirected(false);
           
           const fileExt = selectedQuality === 'audio' ? 'mp3' : 'mp4';
-          const cleanTitle = videoInfo.title.replace(/[\\/:*?"<>|]/g, '_');
+          const cleanTitle = (videoInfo?.title || 'Video').replace(/[\\/:*?"<>|]/g, '_');
           const finalFileName = `[Any Downloader] - ${cleanTitle}.${fileExt}`;
           
           setCompletedBlobUrl(`${API_BASE}/api/file/${activeJobId}`);
@@ -763,7 +767,7 @@ function App() {
         const localDownloadUrl = URL.createObjectURL(finalBlob);
 
         const fileExt = selectedQuality === 'audio' ? 'mp3' : 'mp4';
-        const cleanTitle = videoInfo.title.replace(/[\\/:*?"<>|]/g, '_');
+        const cleanTitle = (videoInfo?.title || 'Video').replace(/[\\/:*?"<>|]/g, '_');
         const finalFileName = `[Any Downloader] - ${cleanTitle}.${fileExt}`;
 
         setCompletedBlobUrl(localDownloadUrl);
@@ -1096,7 +1100,7 @@ function App() {
                     <div className="field-label-row">
                       <span className="field-title-label">Video Title</span>
                       <button 
-                        onClick={() => handleCopy(videoInfo.title, 'title')}
+                        onClick={() => handleCopy(videoInfo.title || '', 'title')}
                         className="field-copy-btn"
                         title="Copy Title"
                       >
@@ -1104,7 +1108,7 @@ function App() {
                         <span>{copyStates.title ? 'Copied' : 'Copy'}</span>
                       </button>
                     </div>
-                    <div className="field-content-preview title-preview">{videoInfo.title}</div>
+                    <div className="field-content-preview title-preview">{videoInfo.title || 'No Title'}</div>
                   </div>
 
                   {/* Field 2: Hashtags */}
@@ -1128,7 +1132,7 @@ function App() {
                     <div className="field-label-row">
                       <span className="field-title-label">Description</span>
                       <button 
-                        onClick={() => handleCopy(videoInfo.description, 'description')}
+                        onClick={() => handleCopy(videoInfo.description || '', 'description')}
                         className="field-copy-btn"
                         title="Copy Description"
                       >
@@ -1139,7 +1143,7 @@ function App() {
                     <textarea 
                       readOnly 
                       className="field-content-textarea" 
-                      value={videoInfo.description}
+                      value={videoInfo.description || ''}
                     />
                   </div>
                 </div>
