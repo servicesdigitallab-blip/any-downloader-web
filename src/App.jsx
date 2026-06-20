@@ -103,6 +103,159 @@ const blogPosts = [
   }
 ];
 
+// Unified helper to download a video/audio stream as a Blob, trying direct fetch and falling back to chunked proxy
+async function downloadStreamAsBlob({
+  streamUrl,
+  totalSize,
+  isEstimated,
+  selectedQuality,
+  setDownloadProgress,
+  targetProgressRef,
+  setDownloadSpeed,
+  setDownloadSize,
+}) {
+  let chunks = [];
+  let downloadedBytes = 0;
+  let directFetchSuccess = false;
+  const startTime = Date.now();
+
+  // Try direct browser fetch first (works if stream has CORS allowed)
+  try {
+    console.log('Attempting direct browser fetch for:', streamUrl);
+    const response = await fetch(streamUrl);
+    if (!response.ok) throw new Error(`Direct fetch failed with status ${response.status}`);
+
+    const reader = response.body.getReader();
+    let contentLength = parseInt(response.headers.get('content-length'), 10) || totalSize || 0;
+    let activeTotal = contentLength;
+    let localIsEstimated = !contentLength;
+
+    if (contentLength > 0) {
+      setDownloadSize(`${(contentLength / (1024 * 1024)).toFixed(1)} MB`);
+    }
+
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+
+      chunks.push(value);
+      downloadedBytes += value.length;
+
+      let currentTotal = activeTotal || downloadedBytes;
+      if (localIsEstimated && downloadedBytes >= currentTotal * 0.9) {
+        currentTotal = Math.max(currentTotal, downloadedBytes + 5 * 1024 * 1024);
+        activeTotal = currentTotal;
+      }
+
+      const progress = Math.min(Math.round((downloadedBytes / currentTotal) * 100), 99);
+      targetProgressRef.current = progress;
+
+      const elapsedSeconds = (Date.now() - startTime) / 1000;
+      const speed = elapsedSeconds > 0 ? (downloadedBytes / (1024 * 1024) / elapsedSeconds).toFixed(1) : '0';
+      const totalMbStr = activeTotal > 0 ? `${(activeTotal / (1024 * 1024)).toFixed(1)} MB` : `${(downloadedBytes / (1024 * 1024)).toFixed(1)} MB`;
+      setDownloadSpeed(`${(downloadedBytes / (1024 * 1024)).toFixed(1)} MB / ${localIsEstimated ? '~' : ''}${totalMbStr} (${speed} MB/s)`);
+      setDownloadSize(totalMbStr);
+    }
+
+    if (downloadedBytes === 0) throw new Error('Downloaded 0 bytes from direct stream.');
+    
+    // Anti-corruption check
+    if (contentLength > 0 && downloadedBytes < contentLength) {
+      throw new Error('Download interrupted or incomplete.');
+    }
+
+    directFetchSuccess = true;
+  } catch (directErr) {
+    console.warn('Direct client-side stream download failed, falling back to chunked proxy:', directErr.message);
+  }
+
+  // Fallback: chunked proxy download via Vercel (bypasses 10s timeout using small chunks)
+  if (!directFetchSuccess) {
+    chunks = [];
+    downloadedBytes = 0;
+    let start = 0;
+    const chunkSize = 1.5 * 1024 * 1024; // 1.5MB chunks (balanced size for speed and Vercel limits)
+    let hasMore = true;
+    let activeTotal = totalSize || 0;
+    let localIsEstimated = !totalSize;
+    const proxyStartTime = Date.now();
+
+    while (hasMore) {
+      const end = start + chunkSize - 1;
+      const actualEnd = activeTotal > 0 ? Math.min(end, activeTotal - 1) : end;
+      const chunkUrl = `${API_BASE}/api/chunk?url=${encodeURIComponent(streamUrl)}&start=${start}&end=${actualEnd}`;
+
+      try {
+        const chunkResponse = await fetch(chunkUrl);
+        if (!chunkResponse.ok) {
+          if (start > 0) {
+            console.log("Chunk request failed (likely reached end of stream):", chunkResponse.status);
+            hasMore = false;
+            break;
+          } else {
+            throw new Error(`Proxy returned status ${chunkResponse.status}`);
+          }
+        }
+
+        const reader = chunkResponse.body.getReader();
+        let chunkBytesFetched = 0;
+
+        while (true) {
+          const { done, value } = await reader.read();
+          if (done) break;
+
+          chunks.push(value);
+          downloadedBytes += value.length;
+          chunkBytesFetched += value.length;
+
+          let currentTotal = activeTotal || downloadedBytes;
+          if (localIsEstimated && downloadedBytes >= currentTotal * 0.9) {
+            currentTotal = Math.max(currentTotal, downloadedBytes + 5 * 1024 * 1024);
+            activeTotal = currentTotal;
+          }
+
+          const progress = Math.min(Math.round((downloadedBytes / currentTotal) * 100), 99);
+          targetProgressRef.current = progress;
+
+          const elapsedSeconds = (Date.now() - proxyStartTime) / 1000;
+          const speed = elapsedSeconds > 0 ? (downloadedBytes / (1024 * 1024) / elapsedSeconds).toFixed(1) : '0';
+          const totalMbStr = activeTotal > 0 ? `${(activeTotal / (1024 * 1024)).toFixed(1)} MB` : `${(downloadedBytes / (1024 * 1024)).toFixed(1)} MB`;
+          setDownloadSpeed(`${(downloadedBytes / (1024 * 1024)).toFixed(1)} MB / ${localIsEstimated ? '~' : ''}${totalMbStr} (${speed} MB/s)`);
+          setDownloadSize(totalMbStr);
+        }
+
+        // If chunk is empty or smaller than requested range (and we didn't cap it by activeTotal), we reached end
+        if (chunkBytesFetched === 0 || (activeTotal > 0 && start + chunkBytesFetched >= activeTotal)) {
+          hasMore = false;
+        } else {
+          start += chunkBytesFetched;
+          // If chunkBytesFetched was smaller than chunkSize, we likely reached the end of file
+          if (chunkBytesFetched < chunkSize && localIsEstimated) {
+            hasMore = false;
+          }
+        }
+      } catch (chunkErr) {
+        console.error(`Chunk request failed at offset ${start}:`, chunkErr.message);
+        if (start > 0) {
+          console.warn("Attempting to save partial video stream...");
+          hasMore = false;
+          break;
+        } else {
+          throw chunkErr;
+        }
+      }
+    }
+
+    if (downloadedBytes === 0) {
+      throw new Error('Downloaded 0 bytes from chunked proxy.');
+    }
+  }
+
+  // Create local Blob
+  const mimeType = selectedQuality === 'audio' ? 'audio/mpeg' : 'video/mp4';
+  return new Blob(chunks, { type: mimeType });
+}
+
 // Fallback UUID v4 generator for insecure/old browser contexts
 function generateUUID() {
   if (typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function') {
@@ -576,71 +729,17 @@ function App() {
         const fileName = data.fileName;
 
         try {
-          // Attempt direct browser fetch from stream URL (bypasses Vercel timeout, uses client bandwidth)
-          // Cobalt instances usually allow CORS on their streams.
-          const response = await fetch(streamUrl);
-          
-          if (!response.ok) {
-            throw new Error(`Direct fetch failed with status ${response.status}`);
-          }
+          const finalBlob = await downloadStreamAsBlob({
+            streamUrl,
+            totalSize: data.totalSize,
+            isEstimated: !data.totalSize,
+            selectedQuality,
+            setDownloadProgress,
+            targetProgressRef,
+            setDownloadSpeed,
+            setDownloadSize,
+          });
 
-          const reader = response.body.getReader();
-          const contentLength = parseInt(response.headers.get('content-length'), 10) || data.totalSize || 0;
-          
-          let displaySize = '';
-          let totalBytesForProgress = contentLength;
-
-          if (contentLength > 0) {
-            displaySize = `${(contentLength / (1024 * 1024)).toFixed(1)} MB`;
-            setDownloadSize(displaySize);
-          } else {
-            // Fallback estimation
-            const durationSec = videoInfo.duration_raw || 60;
-            const factor = 0.375 * 1024 * 1024; // approx 1080p
-            const estimatedSize = Math.round(durationSec * factor);
-            totalBytesForProgress = estimatedSize;
-            displaySize = `~${(estimatedSize / (1024 * 1024)).toFixed(1)} MB`;
-            setDownloadSize(displaySize);
-          }
-
-          let receivedLength = 0;
-          const chunks = [];
-          const startTime = Date.now();
-
-          while (true) {
-            const { done, value } = await reader.read();
-            if (done) break;
-
-            chunks.push(value);
-            receivedLength += value.length;
-
-            let activeTotal = totalBytesForProgress || receivedLength;
-            if ((!contentLength || contentLength === 0) && receivedLength >= activeTotal * 0.9) {
-              activeTotal = Math.max(activeTotal, receivedLength + 5 * 1024 * 1024);
-              totalBytesForProgress = activeTotal;
-              displaySize = `~${(activeTotal / (1024 * 1024)).toFixed(1)} MB`;
-              setDownloadSize(displaySize);
-            }
-
-            const progress = Math.min(Math.round((receivedLength / activeTotal) * 100), 99);
-            targetProgressRef.current = progress;
-            
-            // Calculate speed
-            const elapsedSeconds = (Date.now() - startTime) / 1000;
-            const speed = elapsedSeconds > 0 ? (receivedLength / (1024 * 1024) / elapsedSeconds).toFixed(1) : '0';
-            setDownloadSpeed(`${(receivedLength / (1024 * 1024)).toFixed(1)} MB / ${displaySize} (${speed} MB/s)`);
-          }
-
-          if (receivedLength === 0) {
-            throw new Error('Downloaded 0 bytes.');
-          }
-
-          // Anti-corruption check: if we knew the content length but got less, the stream was cut off
-          if (contentLength > 0 && receivedLength < contentLength) {
-            throw new Error('Download interrupted or incomplete.');
-          }
-
-          const finalBlob = new Blob(chunks, { type: selectedQuality === 'audio' ? 'audio/mpeg' : 'video/mp4' });
           const localDownloadUrl = URL.createObjectURL(finalBlob);
 
           setCompletedBlobUrl(localDownloadUrl);
@@ -668,108 +767,23 @@ function App() {
           saveHistory([newHistoryItem, ...history]);
           serverDownloadSuccess = true;
 
-        } catch (fetchErr) {
-          console.warn('Direct stream fetch failed (CORS or timeout), falling back to server chunk proxy:', fetchErr.message);
+        } catch (downloadErr) {
+          console.warn('Unified download pipeline failed on backend stream, falling back to direct redirect:', downloadErr.message);
           
-          // Fallback: If direct fetch fails, use chunked Vercel proxy
-          if (data.totalSize) {
-            try {
-              const totalSize = data.totalSize;
-              const chunkSize = 4 * 1024 * 1024; // 4MB chunks
-              let start = 0;
-              const chunks = [];
-              let downloadedBytes = 0;
-              const startTime = Date.now();
-
-              while (start < totalSize) {
-                const end = Math.min(start + chunkSize - 1, totalSize - 1);
-                const chunkUrl = `${API_BASE}/api/chunk?url=${encodeURIComponent(streamUrl)}&start=${start}&end=${end}`;
-                
-                const chunkResponse = await fetch(chunkUrl);
-                if (!chunkResponse.ok) {
-                  throw new Error('Error downloading chunk via proxy.');
-                }
-                
-                const reader = chunkResponse.body.getReader();
-                while (true) {
-                  const { done, value } = await reader.read();
-                  if (done) break;
-                  chunks.push(value);
-                  downloadedBytes += value.length;
-                  const progress = Math.min(Math.round((downloadedBytes / totalSize) * 100), 99);
-                  targetProgressRef.current = progress;
-                  
-                  const elapsedSeconds = (Date.now() - startTime) / 1000;
-                  const speed = elapsedSeconds > 0 ? (downloadedBytes / (1024 * 1024) / elapsedSeconds).toFixed(1) : '0';
-                  setDownloadSpeed(`${(downloadedBytes / (1024 * 1024)).toFixed(1)} MB / ${(totalSize / (1024 * 1024)).toFixed(1)} MB (${speed} MB/s)`);
-                }
-                start = end + 1;
-              }
-
-              if (downloadedBytes < totalSize) {
-                throw new Error('Proxy download incomplete.');
-              }
-
-              const finalBlob = new Blob(chunks, { type: selectedQuality === 'audio' ? 'audio/mpeg' : 'video/mp4' });
-              const localDownloadUrl = URL.createObjectURL(finalBlob);
-              
-              setCompletedBlobUrl(localDownloadUrl);
-              setCompletedFileName(fileName);
-              targetProgressRef.current = 100;
-              setDownloadStatus('completed');
-
-              const downloadLink = document.createElement('a');
-              downloadLink.href = localDownloadUrl;
-              downloadLink.setAttribute('download', fileName);
-              document.body.appendChild(downloadLink);
-              downloadLink.click();
-              downloadLink.remove();
-              
-              const newHistoryItem = {
-                id: generateUUID(),
-                title: videoInfo.title,
-                thumbnail: videoInfo.thumbnail,
-                platform: videoInfo.platform,
-                quality: selectedQuality,
-                date: new Date().toLocaleDateString(),
-                downloadUrl: localDownloadUrl
-              };
-              saveHistory([newHistoryItem, ...history]);
-              serverDownloadSuccess = true;
-            } catch (chunkErr) {
-              console.error('Chunk proxy failed, falling back to direct redirect:', chunkErr.message);
-              setCompletedBlobUrl(streamUrl);
-              setCompletedFileName(fileName);
-              targetProgressRef.current = 100;
-              setDownloadStatus('completed');
-              
-              const downloadLink = document.createElement('a');
-              downloadLink.href = streamUrl;
-              downloadLink.setAttribute('download', fileName);
-              downloadLink.setAttribute('target', '_blank');
-              downloadLink.setAttribute('rel', 'noreferrer');
-              document.body.appendChild(downloadLink);
-              downloadLink.click();
-              downloadLink.remove();
-              serverDownloadSuccess = true;
-            }
-          } else {
-            // Absolute final fallback: Direct redirect
-            setCompletedBlobUrl(streamUrl);
-            setCompletedFileName(fileName);
-            targetProgressRef.current = 100;
-            setDownloadStatus('completed');
-            
-            const downloadLink = document.createElement('a');
-            downloadLink.href = streamUrl;
-            downloadLink.setAttribute('download', fileName);
-            downloadLink.setAttribute('target', '_blank');
-            downloadLink.setAttribute('rel', 'noreferrer');
-            document.body.appendChild(downloadLink);
-            downloadLink.click();
-            downloadLink.remove();
-            serverDownloadSuccess = true;
-          }
+          setCompletedBlobUrl(streamUrl);
+          setCompletedFileName(fileName);
+          targetProgressRef.current = 100;
+          setDownloadStatus('completed');
+          
+          const downloadLink = document.createElement('a');
+          downloadLink.href = streamUrl;
+          downloadLink.setAttribute('download', fileName);
+          downloadLink.setAttribute('target', '_blank');
+          downloadLink.setAttribute('rel', 'noreferrer');
+          document.body.appendChild(downloadLink);
+          downloadLink.click();
+          downloadLink.remove();
+          serverDownloadSuccess = true;
         }
         return;
       }
@@ -953,90 +967,18 @@ function App() {
         isEstimated = true;
       }
 
-      let directFetchSuccess = false;
-      const chunks = [];
-
       try {
-        console.log('Attempting direct browser fetch for:', cobaltStreamUrl);
-        const response = await fetch(cobaltStreamUrl);
-        if (!response.ok) throw new Error(`Direct fetch returned status ${response.status}`);
+        const finalBlob = await downloadStreamAsBlob({
+          streamUrl: cobaltStreamUrl,
+          totalSize,
+          isEstimated,
+          selectedQuality,
+          setDownloadProgress,
+          targetProgressRef,
+          setDownloadSpeed,
+          setDownloadSize,
+        });
 
-        const reader = response.body.getReader();
-        let receivedLength = 0;
-        const startTime = Date.now();
-
-        while (true) {
-          const { done, value } = await reader.read();
-          if (done) break;
-
-          chunks.push(value);
-          receivedLength += value.length;
-
-          let activeTotal = totalSize || receivedLength;
-          if (isEstimated && receivedLength >= activeTotal * 0.9) {
-            activeTotal = Math.max(activeTotal, receivedLength + 5 * 1024 * 1024);
-            totalSize = activeTotal;
-          }
-
-          const progress = Math.min(Math.round((receivedLength / activeTotal) * 100), 99);
-          targetProgressRef.current = progress;
-
-          const elapsedSeconds = (Date.now() - startTime) / 1000;
-          const speed = elapsedSeconds > 0 ? (receivedLength / (1024 * 1024) / elapsedSeconds).toFixed(1) : '0';
-          setDownloadSpeed(`${(receivedLength / (1024 * 1024)).toFixed(1)} MB / ${isEstimated ? '~' : ''}${(totalSize / (1024 * 1024)).toFixed(1)} MB (${speed} MB/s)`);
-        }
-
-        if (receivedLength === 0) throw new Error('Downloaded 0 bytes from direct stream.');
-        directFetchSuccess = true;
-      } catch (directErr) {
-        console.warn('Direct client-side stream download failed (CORS or network), falling back to chunked proxy download:', directErr.message);
-      }
-
-      if (!directFetchSuccess) {
-        if (totalSize > 0 && !isEstimated) {
-          try {
-            console.log('Starting chunked proxy download for:', cobaltStreamUrl);
-            setDownloadSpeed('Downloading via proxy chunks...');
-            const chunkSize = 4 * 1024 * 1024;
-            let start = 0;
-            let downloadedBytes = 0;
-            const startTime = Date.now();
-
-            while (start < totalSize) {
-              const end = Math.min(start + chunkSize - 1, totalSize - 1);
-              const chunkUrl = `${API_BASE}/api/chunk?url=${encodeURIComponent(cobaltStreamUrl)}&start=${start}&end=${end}`;
-              
-              const chunkResponse = await fetch(chunkUrl);
-              if (!chunkResponse.ok) throw new Error('Error downloading video chunk via proxy.');
-              
-              const reader = chunkResponse.body.getReader();
-              const chunkChunks = [];
-              while (true) {
-                const { done, value } = await reader.read();
-                if (done) break;
-                chunkChunks.push(value);
-                downloadedBytes += value.length;
-                const progress = Math.min(Math.round((downloadedBytes / totalSize) * 100), 99);
-                targetProgressRef.current = progress;
-
-                const elapsedSeconds = (Date.now() - startTime) / 1000;
-                const speed = elapsedSeconds > 0 ? (downloadedBytes / (1024 * 1024) / elapsedSeconds).toFixed(1) : '0';
-                setDownloadSpeed(`${(downloadedBytes / (1024 * 1024)).toFixed(1)} MB / ${(totalSize / (1024 * 1024)).toFixed(1)} MB (${speed} MB/s)`);
-              }
-              
-              const chunkBlob = new Blob(chunkChunks);
-              chunks.push(chunkBlob);
-              start = end + 1;
-            }
-            directFetchSuccess = true;
-          } catch (proxyErr) {
-            console.error('Chunked proxy download failed:', proxyErr.message);
-          }
-        }
-      }
-
-      if (directFetchSuccess && chunks.length > 0) {
-        const finalBlob = new Blob(chunks, { type: selectedQuality === 'audio' ? 'audio/mpeg' : 'video/mp4' });
         const localDownloadUrl = URL.createObjectURL(finalBlob);
 
         const fileExt = selectedQuality === 'audio' ? 'mp3' : 'mp4';
@@ -1065,6 +1007,28 @@ function App() {
           downloadUrl: localDownloadUrl
         };
         saveHistory([newHistoryItem, ...history]);
+        clientDownloadSuccess = true;
+
+      } catch (clientErr) {
+        console.warn('Phase 2 direct/chunked download failed, falling back to direct redirect:', clientErr.message);
+        
+        const fileExt = selectedQuality === 'audio' ? 'mp3' : 'mp4';
+        const cleanTitle = (videoInfo?.title || 'Video').replace(/[\\/:*?"<>|]/g, '_');
+        const finalFileName = `[Any Downloader] - ${cleanTitle}.${fileExt}`;
+
+        setCompletedBlobUrl(cobaltStreamUrl);
+        setCompletedFileName(finalFileName);
+        targetProgressRef.current = 100;
+        setDownloadStatus('completed');
+        
+        const downloadLink = document.createElement('a');
+        downloadLink.href = cobaltStreamUrl;
+        downloadLink.setAttribute('download', finalFileName);
+        downloadLink.setAttribute('target', '_blank');
+        downloadLink.setAttribute('rel', 'noreferrer');
+        document.body.appendChild(downloadLink);
+        downloadLink.click();
+        downloadLink.remove();
         clientDownloadSuccess = true;
       }
     }

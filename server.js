@@ -1078,33 +1078,146 @@ app.get('/api/chunk', async (req, res) => {
     }
 
     const response = await fetch(url, { headers });
+    
+    // Check if the request failed and it's not a successful partial content status
     if (!response.ok && response.status !== 206) {
+      // If we got a 416 Range Not Satisfiable, return it directly so the client can stop the download loop
+      if (response.status === 416) {
+        return res.status(416).json({ error: 'Range Not Satisfiable' });
+      }
       throw new Error(`Failed to fetch stream: ${response.statusText} (${response.status})`);
     }
 
-    res.setHeader('Content-Type', response.headers.get('content-type') || 'application/octet-stream');
-    res.setHeader('Content-Length', response.headers.get('content-length') || '');
-    if (response.headers.has('content-range')) {
-      res.setHeader('Content-Range', response.headers.get('content-range') || '');
+    let responseStatus = response.status;
+    let contentLength = parseInt(response.headers.get('content-length'), 10) || 0;
+    
+    let rangeStart = start !== undefined ? parseInt(start, 10) : null;
+    let rangeEnd = end !== undefined ? parseInt(end, 10) : null;
+    
+    let shouldSlice = false;
+    let sliceBytesNeed = 0;
+    
+    if (rangeStart !== null && rangeEnd !== null && responseStatus === 200) {
+      // Upstream ignored the Range header. We must manually slice the stream.
+      shouldSlice = true;
+      sliceBytesNeed = rangeEnd - rangeStart + 1;
+      responseStatus = 206;
+      res.setHeader('Content-Range', `bytes ${rangeStart}-${rangeEnd}/${contentLength || '*'}`);
+      res.setHeader('Content-Length', sliceBytesNeed);
+      res.status(206);
+    } else {
+      res.status(responseStatus);
+      res.setHeader('Content-Type', response.headers.get('content-type') || 'application/octet-stream');
+      res.setHeader('Content-Length', response.headers.get('content-length') || '');
+      if (response.headers.has('content-range')) {
+        res.setHeader('Content-Range', response.headers.get('content-range') || '');
+      }
     }
 
     const body = response.body;
     if (body) {
-      const { Readable } = await import('stream');
-      const stream = Readable.fromWeb(body);
-      stream.on('error', (err) => {
-        console.error('Chunk stream read error:', err.message);
-        if (!res.headersSent) {
-          res.status(500).json({ error: 'Failed to read chunk stream.' });
+      let skippedBytes = 0;
+      let sentBytes = 0;
+
+      if (typeof body.getReader === 'function') {
+        const reader = body.getReader();
+        try {
+          while (true) {
+            const { done, value } = await reader.read();
+            if (done) break;
+
+            let chunk = value;
+            if (shouldSlice) {
+              if (skippedBytes < rangeStart) {
+                if (skippedBytes + chunk.length <= rangeStart) {
+                  skippedBytes += chunk.length;
+                  continue;
+                } else {
+                  const offset = rangeStart - skippedBytes;
+                  chunk = chunk.slice(offset);
+                  skippedBytes = rangeStart;
+                }
+              }
+
+              if (sentBytes + chunk.length > sliceBytesNeed) {
+                const take = sliceBytesNeed - sentBytes;
+                res.write(chunk.slice(0, take));
+                sentBytes += take;
+                await reader.cancel().catch(() => {}); // Stop upstream stream safely
+                break;
+              } else {
+                res.write(chunk);
+                sentBytes += chunk.length;
+              }
+            } else {
+              res.write(chunk);
+            }
+          }
+          res.end();
+        } catch (streamErr) {
+          console.error('Chunk reader stream error:', streamErr.message);
+          if (!res.headersSent) {
+            res.status(500).json({ error: 'Failed to read chunk stream.' });
+          }
         }
-      });
-      stream.pipe(res);
+      } else if (typeof body.pipe === 'function') {
+        // Fallback for Node Readable stream
+        if (shouldSlice) {
+          body.on('data', (chunk) => {
+            let dataChunk = chunk;
+            if (skippedBytes < rangeStart) {
+              if (skippedBytes + dataChunk.length <= rangeStart) {
+                skippedBytes += dataChunk.length;
+                return;
+              } else {
+                const offset = rangeStart - skippedBytes;
+                dataChunk = dataChunk.slice(offset);
+                skippedBytes = rangeStart;
+              }
+            }
+
+            if (sentBytes + dataChunk.length > sliceBytesNeed) {
+              const take = sliceBytesNeed - sentBytes;
+              res.write(dataChunk.slice(0, take));
+              sentBytes += take;
+              if (typeof body.destroy === 'function') body.destroy();
+              res.end();
+            } else {
+              res.write(dataChunk);
+              sentBytes += dataChunk.length;
+            }
+          });
+          body.on('end', () => {
+            if (!res.writableEnded) res.end();
+          });
+          body.on('error', (err) => {
+            console.error('Node chunk stream error:', err.message);
+            if (!res.headersSent) {
+              res.status(500).json({ error: 'Failed to read node stream.' });
+            }
+          });
+        } else {
+          body.pipe(res);
+        }
+      } else {
+        const { Readable } = await import('stream');
+        const stream = Readable.fromWeb(body);
+        stream.on('error', (err) => {
+          console.error('Fallback chunk stream read error:', err.message);
+          if (!res.headersSent) {
+            res.status(500).json({ error: 'Failed to read fallback stream.' });
+          }
+        });
+        stream.pipe(res);
+      }
     } else {
       res.status(500).json({ error: 'No response body' });
     }
   } catch (err) {
     console.error('Error fetching chunk:', err);
-    res.status(500).json({ error: err.message });
+    if (!res.headersSent) {
+      res.status(500).json({ error: err.message });
+    }
   }
 });
 
