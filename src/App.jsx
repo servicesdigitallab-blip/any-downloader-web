@@ -260,7 +260,7 @@ function App() {
         else setSelectedQuality('360p');
       }
     } catch (err) {
-      setError(err.message);
+      setError(err?.message || (typeof err === 'string' ? err : 'An unknown network error occurred. Please try again.'));
     } finally {
       setLoading(false);
     }
