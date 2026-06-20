@@ -118,6 +118,26 @@ function generateUUID() {
 function App() {
   const [visibleElements, setVisibleElements] = useState({});
   const [url, setUrl] = useState('');
+  const [loading, setLoading] = useState(false);
+  const [videoInfo, setVideoInfo] = useState(null);
+  const [error, setError] = useState(null);
+  const [selectedQuality, setSelectedQuality] = useState('1080p');
+  const [previewing, setPreviewing] = useState(false);
+  const [showAnalysis, setShowAnalysis] = useState(false);
+
+  // Redirect / Popunder State
+  const [hasRedirected, setHasRedirected] = useState(false);
+
+  // Active Download Job State
+  const [jobId, setJobId] = useState(null);
+  const [downloadStatus, setDownloadStatus] = useState(null); // 'downloading', 'merging', 'completed', 'error'
+  const [downloadProgress, setDownloadProgress] = useState(0);
+  const [downloadSpeed, setDownloadSpeed] = useState('');
+  const [downloadEta, setDownloadEta] = useState('');
+  const [downloadSize, setDownloadSize] = useState('');
+  const [downloadError, setDownloadError] = useState(null);
+  const [completedBlobUrl, setCompletedBlobUrl] = useState('');
+  const [completedFileName, setCompletedFileName] = useState('');
 
   const fakeProgressRef = React.useRef(null);
 
@@ -154,26 +174,6 @@ function App() {
       }
     };
   }, [downloadStatus]);
-  const [loading, setLoading] = useState(false);
-  const [videoInfo, setVideoInfo] = useState(null);
-  const [error, setError] = useState(null);
-  const [selectedQuality, setSelectedQuality] = useState('1080p');
-  const [previewing, setPreviewing] = useState(false);
-  const [showAnalysis, setShowAnalysis] = useState(false);
-
-  // Redirect / Popunder State
-  const [hasRedirected, setHasRedirected] = useState(false);
-
-  // Active Download Job State
-  const [jobId, setJobId] = useState(null);
-  const [downloadStatus, setDownloadStatus] = useState(null); // 'downloading', 'merging', 'completed', 'error'
-  const [downloadProgress, setDownloadProgress] = useState(0);
-  const [downloadSpeed, setDownloadSpeed] = useState('');
-  const [downloadEta, setDownloadEta] = useState('');
-  const [downloadSize, setDownloadSize] = useState('');
-  const [downloadError, setDownloadError] = useState(null);
-  const [completedBlobUrl, setCompletedBlobUrl] = useState('');
-  const [completedFileName, setCompletedFileName] = useState('');
 
   // Downloads History State
   const [history, setHistory] = useState([]);
