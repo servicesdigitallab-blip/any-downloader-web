@@ -206,7 +206,7 @@ function App() {
   // Extract Hashtags from Video details
   const getHashtags = () => {
     if (!videoInfo) return '';
-    if (videoInfo.tags && videoInfo.tags.length > 0) {
+    if (videoInfo.tags && Array.isArray(videoInfo.tags) && videoInfo.tags.length > 0) {
       return videoInfo.tags.join(' ');
     }
     // Regex extract from description
@@ -1320,7 +1320,7 @@ function App() {
         {history.length > 0 ? (
           <div className="history-list">
             {history.map((item) => (
-              <div key={item.id} className="history-item scroll-animate">
+              <div key={item.id} className="history-item">
                 <div className="history-item-left">
                   <img 
                     src={item.thumbnail} 
@@ -1385,7 +1385,7 @@ function App() {
             return (
               <article 
                 key={idx} 
-                className={`blog-card scroll-animate ${isExpanded ? 'active' : ''}`}
+                className={`blog-card ${isExpanded ? 'active' : ''}`}
                 style={{ transitionDelay: `${idx * 0.05}s`, cursor: 'pointer' }}
                 id={`blog-post-${idx}`}
                 onClick={() => setExpandedPost(isExpanded ? null : idx)}
