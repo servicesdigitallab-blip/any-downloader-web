@@ -1175,7 +1175,11 @@ app.get('/api/chunk', async (req, res) => {
       headers['Range'] = `bytes=${start}-${end}`;
     }
 
-    const response = await fetch(url, { headers });
+    // Add 12 seconds connection/response timeout for upstream requests
+    const response = await fetch(url, { 
+      headers,
+      signal: AbortSignal.timeout(12000)
+    });
     
     // Check if the request failed and it's not a successful partial content status
     if (!response.ok && response.status !== 206) {
@@ -1225,7 +1229,15 @@ app.get('/api/chunk', async (req, res) => {
           let chunksCount = 0;
           let bytesCount = 0;
           while (true) {
+            // Add stream read activity timeout (10 seconds)
+            const readTimeout = setTimeout(() => {
+              reader.cancel().catch(() => {});
+              console.warn('[ChunkProxy] Upstream read timed out (no data for 10 seconds).');
+            }, 10000);
+
             const { done, value } = await reader.read();
+            clearTimeout(readTimeout);
+
             if (done) {
               console.log(`[ChunkProxy] Reader done. Total chunks: ${chunksCount}, Total bytes: ${bytesCount}`);
               break;
@@ -1272,7 +1284,20 @@ app.get('/api/chunk', async (req, res) => {
       } else if (typeof body.pipe === 'function') {
         // Fallback for Node Readable stream
         if (shouldSlice) {
+          let activityTimeout = setTimeout(() => {
+            if (typeof body.destroy === 'function') body.destroy();
+            if (!res.writableEnded) res.end();
+            console.warn('[ChunkProxy] Node stream read timed out.');
+          }, 10000);
+
           body.on('data', (chunk) => {
+            clearTimeout(activityTimeout);
+            activityTimeout = setTimeout(() => {
+              if (typeof body.destroy === 'function') body.destroy();
+              if (!res.writableEnded) res.end();
+              console.warn('[ChunkProxy] Node stream read timed out.');
+            }, 10000);
+
             let dataChunk = chunk;
             if (skippedBytes < rangeStart) {
               if (skippedBytes + dataChunk.length <= rangeStart) {
@@ -1297,9 +1322,11 @@ app.get('/api/chunk', async (req, res) => {
             }
           });
           body.on('end', () => {
+            clearTimeout(activityTimeout);
             if (!res.writableEnded) res.end();
           });
           body.on('error', (err) => {
+            clearTimeout(activityTimeout);
             console.error('Node chunk stream error:', err.message);
             if (!res.headersSent) {
               res.status(500).json({ error: 'Failed to read node stream.' });
@@ -1825,6 +1852,8 @@ app.get('/api/file/:jobId', (req, res) => {
   console.log(`Streaming file for job ${jobId}: ${job.fileName}`);
 
   // Set headers to trigger file download with customized filename
+  const stats = fs.statSync(job.filePath);
+  res.setHeader('Content-Length', stats.size);
   res.setHeader('Content-Disposition', `attachment; filename="${job.fileName.replace(/"/g, '\\"')}"; filename*=UTF-8''${encodeURIComponent(job.fileName)}`);
   res.setHeader('Content-Type', 'application/octet-stream');
 

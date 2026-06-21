@@ -113,6 +113,8 @@ async function downloadStreamAsBlob({
   targetProgressRef,
   setDownloadSpeed,
   setDownloadSize,
+  setIsSizeEstimated,
+  isSavingStage,
 }) {
   let chunks = [];
   let downloadedBytes = 0;
@@ -121,6 +123,7 @@ async function downloadStreamAsBlob({
 
   let activeTotal = totalSize || 0;
   let localIsEstimated = isEstimated === undefined ? !activeTotal : !!isEstimated;
+  if (setIsSizeEstimated) setIsSizeEstimated(localIsEstimated);
 
   // Resolve exact size from backend /api/size endpoint to ensure accurate progress/size and avoid 98% freezes
   if (localIsEstimated) {
@@ -133,6 +136,7 @@ async function downloadStreamAsBlob({
         if (sizeData && sizeData.size && sizeData.size > 0) {
           activeTotal = sizeData.size;
           localIsEstimated = false;
+          if (setIsSizeEstimated) setIsSizeEstimated(false);
           console.log(`Successfully resolved exact size from backend: ${activeTotal} bytes`);
         }
       }
@@ -141,12 +145,12 @@ async function downloadStreamAsBlob({
     }
   }
 
-  const isCobalt = streamUrl.includes('/tunnel') || streamUrl.includes('cobalt');
+  const isDirectFetchable = streamUrl.includes('/tunnel') || streamUrl.includes('cobalt') || streamUrl.includes('/api/file/');
 
-  // Case 1: Cobalt stream URL (supports CORS, single-use token, NOT IP-bound)
-  if (isCobalt) {
+  // Case 1: Direct-fetchable stream URL (supports CORS, single-use token or local origin, NOT IP-bound)
+  if (isDirectFetchable) {
     try {
-      console.log('Attempting direct browser fetch for Cobalt stream:', streamUrl);
+      console.log('Attempting direct browser fetch for stream:', streamUrl);
       
       const controller = new AbortController();
       let timeoutId = setTimeout(() => {
@@ -168,6 +172,7 @@ async function downloadStreamAsBlob({
                           activeTotal || 0;
       activeTotal = contentLength;
       localIsEstimated = !exactLength;
+      if (setIsSizeEstimated) setIsSizeEstimated(localIsEstimated);
 
       if (contentLength > 0) {
         setDownloadSize(`${(contentLength / (1024 * 1024)).toFixed(1)} MB`);
@@ -214,7 +219,12 @@ async function downloadStreamAsBlob({
           activeTotal = currentTotal;
         }
 
-        const progress = Math.min(Math.round((downloadedBytes / currentTotal) * 100), 99);
+        let progress;
+        if (isSavingStage) {
+          progress = Math.min(Math.round(85 + (downloadedBytes / currentTotal) * 14), 99);
+        } else {
+          progress = Math.min(Math.round(35 + (downloadedBytes / currentTotal) * 64), 99);
+        }
         targetProgressRef.current = progress;
 
         const elapsedSeconds = (Date.now() - startTime) / 1000;
@@ -239,7 +249,7 @@ async function downloadStreamAsBlob({
 
       directFetchSuccess = true;
     } catch (directErr) {
-      console.warn('Direct Cobalt fetch failed, trying chunked proxy fallback:', directErr.message);
+      console.warn('Direct fetch failed, trying chunked proxy fallback:', directErr.message);
       // Let it fall through to Case 2 chunked proxy instead of throwing
     }
   } else {
@@ -257,6 +267,7 @@ async function downloadStreamAsBlob({
     let hasMore = true;
     let activeTotal = totalSize || 0;
     let localIsEstimated = !totalSize;
+    if (setIsSizeEstimated) setIsSizeEstimated(localIsEstimated);
     const proxyStartTime = Date.now();
 
     while (hasMore) {
@@ -266,7 +277,14 @@ async function downloadStreamAsBlob({
 
       try {
         const chunkController = new AbortController();
+        const connTimeout = setTimeout(() => {
+          chunkController.abort();
+          console.warn(`Chunk request connection timed out at offset ${start}`);
+        }, 15000); // 15 seconds connection timeout
+
         const chunkResponse = await fetch(chunkUrl, { signal: chunkController.signal });
+        clearTimeout(connTimeout);
+
         if (!chunkResponse.ok) {
           if (start > 0) {
             console.log("Chunk request failed (likely reached end of stream):", chunkResponse.status);
@@ -287,6 +305,7 @@ async function downloadStreamAsBlob({
               if (parsedSize > 0) {
                 activeTotal = parsedSize;
                 localIsEstimated = false;
+                if (setIsSizeEstimated) setIsSizeEstimated(false);
                 console.log(`[ChunkProxy] Discovered exact stream size from content-range: ${activeTotal} bytes`);
               }
             }
@@ -298,6 +317,7 @@ async function downloadStreamAsBlob({
               if (parsedSize > 0) {
                 activeTotal = parsedSize;
                 localIsEstimated = false;
+                if (setIsSizeEstimated) setIsSizeEstimated(false);
                 console.log(`[ChunkProxy] Discovered exact stream size from content-length: ${activeTotal} bytes`);
               }
             }
@@ -352,7 +372,12 @@ async function downloadStreamAsBlob({
             activeTotal = currentTotal;
           }
 
-          const progress = Math.min(Math.round((downloadedBytes / currentTotal) * 100), 99);
+          let progress;
+          if (isSavingStage) {
+            progress = Math.min(Math.round(85 + (downloadedBytes / currentTotal) * 14), 99);
+          } else {
+            progress = Math.min(Math.round(35 + (downloadedBytes / currentTotal) * 64), 99);
+          }
           targetProgressRef.current = progress;
 
           const elapsedSeconds = (Date.now() - proxyStartTime) / 1000;
@@ -533,6 +558,7 @@ function App() {
   const [downloadSpeed, setDownloadSpeed] = useState('');
   const [downloadEta, setDownloadEta] = useState('');
   const [downloadSize, setDownloadSize] = useState('');
+  const [isSizeEstimated, setIsSizeEstimated] = useState(false);
   const [downloadError, setDownloadError] = useState(null);
   const [completedBlobUrl, setCompletedBlobUrl] = useState('');
   const [completedFileName, setCompletedFileName] = useState('');
@@ -818,6 +844,7 @@ function App() {
     setDownloadSpeed('Initializing download engine...');
     setDownloadEta('');
     setDownloadSize('');
+    setIsSizeEstimated(false);
     setDownloadError(null);
     setCompletedBlobUrl('');
     setCompletedFileName('');
@@ -990,6 +1017,8 @@ function App() {
             targetProgressRef,
             setDownloadSpeed,
             setDownloadSize,
+            setIsSizeEstimated,
+            isSavingStage: false,
           });
 
           const localDownloadUrl = URL.createObjectURL(finalBlob);
@@ -1073,6 +1102,8 @@ function App() {
             targetProgressRef,
             setDownloadSpeed,
             setDownloadSize,
+            setIsSizeEstimated,
+            isSavingStage: false,
           });
 
           const localDownloadUrl = URL.createObjectURL(finalBlob);
@@ -1127,10 +1158,40 @@ function App() {
           const jobUpdate = JSON.parse(event.data);
 
           setDownloadStatus(jobUpdate.status);
-          targetProgressRef.current = jobUpdate.progress;
+          
+          // Scale progress during download and merging phases
+          let displayTarget = jobUpdate.progress;
+          if (jobUpdate.status === 'downloading') {
+            displayTarget = Math.round(jobUpdate.progress * 0.8);
+          } else if (jobUpdate.status === 'merging') {
+            displayTarget = 85;
+          }
+          targetProgressRef.current = displayTarget;
+
           setDownloadSpeed(jobUpdate.speed);
           setDownloadEta(jobUpdate.eta);
-          setDownloadSize(jobUpdate.size);
+
+          // Handle unknown size fallback estimation
+          let sizeDisplay = jobUpdate.size;
+          if (!sizeDisplay || sizeDisplay === 'Unknown') {
+            const durationSec = videoInfo?.duration_raw || 60;
+            const bitrates = {
+              '4k': 1.875 * 1024 * 1024,
+              '2k': 0.75 * 1024 * 1024,
+              '1080p': 0.375 * 1024 * 1024,
+              '720p': 0.1875 * 1024 * 1024,
+              '480p': 0.1 * 1024 * 1024,
+              '360p': 0.0625 * 1024 * 1024,
+              'audio': 0.02 * 1024 * 1024
+            };
+            const factor = bitrates[selectedQuality] || bitrates['1080p'];
+            const estBytes = durationSec * factor;
+            sizeDisplay = `${(estBytes / (1024 * 1024)).toFixed(1)} MB`;
+            setIsSizeEstimated(true);
+          } else {
+            setIsSizeEstimated(false);
+          }
+          setDownloadSize(sizeDisplay);
           
           if (jobUpdate.status === 'error') {
             setDownloadError(jobUpdate.error);
@@ -1161,6 +1222,8 @@ function App() {
                   targetProgressRef,
                   setDownloadSpeed,
                   setDownloadSize,
+                  setIsSizeEstimated,
+                  isSavingStage: true,
                 });
 
                 const localDownloadUrl = URL.createObjectURL(finalBlob);
@@ -1636,7 +1699,7 @@ function App() {
                   <span className="progress-speed-eta">
                     <span>Speed: <strong>{downloadSpeed}</strong></span>
                     <span>ETA: <strong>{downloadEta}</strong></span>
-                    <span>Size: <strong>{downloadSize}</strong></span>
+                    <span>Size: <strong>{isSizeEstimated ? '~' : ''}{downloadSize}</strong></span>
                   </span>
                 )}
               </div>
