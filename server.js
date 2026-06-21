@@ -144,18 +144,19 @@ app.get('/api/debug', (req, res) => {
 // Helper: Resolve download via community Cobalt API v10 with dynamic scanning
 async function getCobaltInstances() {
   const verifiedInstances = [
-    'https://rue-cobalt.xenon.zone',
-    'https://cobaltapi.kittycat.boo',
     'https://dog.kittycat.boo',
+    'https://cobaltapi.kittycat.boo',
+    'https://rue-cobalt.xenon.zone',
     'https://fox.kittycat.boo',
-    'https://api.cobalt.blackcat.sweeux.org'
+    'https://api.cobalt.liubquanti.click'
   ];
 
   const staticInstances = [
-    'https://rue-cobalt.xenon.zone',
-    'https://cobaltapi.kittycat.boo',
     'https://dog.kittycat.boo',
+    'https://cobaltapi.kittycat.boo',
+    'https://rue-cobalt.xenon.zone',
     'https://fox.kittycat.boo',
+    'https://api.cobalt.liubquanti.click',
     'https://api.cobalt.blackcat.sweeux.org',
     'https://cobaltapi.cjs.nz',
     'https://sunny.imput.net',

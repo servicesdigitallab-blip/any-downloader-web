@@ -119,25 +119,20 @@ async function downloadStreamAsBlob({
   let directFetchSuccess = false;
   const startTime = Date.now();
 
-  let activeStreamUrl = streamUrl;
-  if (activeStreamUrl.startsWith('http://')) {
-    activeStreamUrl = activeStreamUrl.replace('http://', 'https://');
-  }
-
-  const isCobalt = activeStreamUrl.includes('/tunnel') || activeStreamUrl.includes('cobalt');
+  const isCobalt = streamUrl.includes('/tunnel') || streamUrl.includes('cobalt');
 
   // Case 1: Cobalt stream URL (supports CORS, single-use token, NOT IP-bound)
   if (isCobalt) {
     try {
-      console.log('Attempting direct browser fetch for Cobalt stream:', activeStreamUrl);
+      console.log('Attempting direct browser fetch for Cobalt stream:', streamUrl);
       
       const controller = new AbortController();
       let timeoutId = setTimeout(() => {
         controller.abort();
         console.warn('Direct fetch connection timed out.');
-      }, 15000); // 15 seconds initial connection timeout
+      }, 30000); // 30 seconds initial connection timeout
 
-      const response = await fetch(activeStreamUrl, { signal: controller.signal });
+      const response = await fetch(streamUrl, { signal: controller.signal });
       clearTimeout(timeoutId);
 
       if (!response.ok) throw new Error(`Direct fetch failed with status ${response.status}`);
@@ -161,8 +156,8 @@ async function downloadStreamAsBlob({
         clearTimeout(timeoutId);
         timeoutId = setTimeout(() => {
           controller.abort();
-          console.warn('Direct fetch stream hung (no data for 15 seconds). Aborting.');
-        }, 15000); // 15 seconds activity timeout
+          console.warn('Direct fetch stream hung (no data for 60 seconds). Aborting.');
+        }, 60000); // 60 seconds activity timeout
       };
 
       resetTimeout();
@@ -203,8 +198,8 @@ async function downloadStreamAsBlob({
 
       directFetchSuccess = true;
     } catch (directErr) {
-      console.error('Direct Cobalt fetch failed:', directErr.message);
-      throw directErr; // Rethrow to bypass chunked proxy (since Cobalt single-use token will fail anyway) and go directly to redirect fallback
+      console.warn('Direct Cobalt fetch failed, trying chunked proxy fallback:', directErr.message);
+      // Let it fall through to Case 2 chunked proxy instead of throwing
     }
   } else {
     // Case 2: Server-generated stream URL (e.g. YouTube googlevideo.com - IP-bound, no CORS)
@@ -213,7 +208,7 @@ async function downloadStreamAsBlob({
   }
 
   // Fallback: chunked proxy download via Vercel (bypasses 10s timeout using small chunks)
-  if (!directFetchSuccess && !isCobalt) {
+  if (!directFetchSuccess) {
     chunks = [];
     downloadedBytes = 0;
     let start = 0;
@@ -784,6 +779,8 @@ function App() {
           });
 
           const localDownloadUrl = URL.createObjectURL(finalBlob);
+          const resolvedSize = `${(finalBlob.size / (1024 * 1024)).toFixed(1)} MB`;
+          setDownloadSize(resolvedSize);
 
           setCompletedBlobUrl(localDownloadUrl);
           setCompletedFileName(fileName);
@@ -806,7 +803,7 @@ function App() {
             thumbnail: videoInfo.thumbnail,
             platform: videoInfo.platform,
             quality: selectedQuality,
-            size: downloadSize,
+            size: resolvedSize,
             date: new Date().toLocaleDateString(),
             downloadUrl: localDownloadUrl
           };
@@ -816,8 +813,27 @@ function App() {
         } catch (downloadErr) {
           console.warn('Unified download pipeline failed on backend stream, falling back to direct redirect:', downloadErr.message);
           
+          const fileExt = selectedQuality === 'audio' ? 'mp3' : 'mp4';
+          const cleanTitle = (videoInfo?.title || 'Video').replace(/[\\/:*?"<>|]/g, '_');
+          const finalFileName = `[Any Downloader] - ${cleanTitle}.${fileExt}`;
+
+          // Estimate size for redirect fallback:
+          const durationSec = videoInfo.duration_raw || 60;
+          const bitrates = {
+            '4k': 1.875 * 1024 * 1024,
+            '2k': 0.75 * 1024 * 1024,
+            '1080p': 0.375 * 1024 * 1024,
+            '720p': 0.1875 * 1024 * 1024,
+            '480p': 0.1 * 1024 * 1024,
+            '360p': 0.0625 * 1024 * 1024,
+            'audio': 0.02 * 1024 * 1024
+          };
+          const factor = bitrates[selectedQuality] || bitrates['1080p'];
+          const estSize = `${((durationSec * factor) / (1024 * 1024)).toFixed(1)} MB`;
+          setDownloadSize(estSize);
+
           setCompletedBlobUrl(streamUrl);
-          setCompletedFileName(fileName);
+          setCompletedFileName(finalFileName);
           targetProgressRef.current = 100;
           displayedProgressRef.current = 100;
           setDownloadProgress(100);
@@ -825,12 +841,25 @@ function App() {
           
           const downloadLink = document.createElement('a');
           downloadLink.href = streamUrl;
-          downloadLink.setAttribute('download', fileName);
+          downloadLink.setAttribute('download', finalFileName);
           downloadLink.setAttribute('target', '_blank');
           downloadLink.setAttribute('rel', 'noreferrer');
           document.body.appendChild(downloadLink);
           downloadLink.click();
           downloadLink.remove();
+
+          // Add to local history list for redirect fallback too!
+          const newHistoryItem = {
+            id: generateUUID(),
+            title: videoInfo.title,
+            thumbnail: videoInfo.thumbnail,
+            platform: videoInfo.platform,
+            quality: selectedQuality,
+            size: estSize,
+            date: new Date().toLocaleDateString(),
+            downloadUrl: streamUrl
+          };
+          saveHistory([newHistoryItem, ...history]);
           serverDownloadSuccess = true;
         }
         return;
@@ -926,11 +955,12 @@ function App() {
 
     if (instances.length === 0) {
       instances = [
-        'https://api.cobalt.blackcat.sweeux.org',
+        'https://dog.kittycat.boo',
         'https://cobaltapi.kittycat.boo',
         'https://rue-cobalt.xenon.zone',
         'https://fox.kittycat.boo',
-        'https://dog.kittycat.boo',
+        'https://api.cobalt.liubquanti.click',
+        'https://api.cobalt.blackcat.sweeux.org',
         'https://cobaltapi.cjs.nz',
         'https://sunny.imput.net',
         'https://kityune.imput.net',
@@ -1025,6 +1055,8 @@ function App() {
         });
 
         const localDownloadUrl = URL.createObjectURL(finalBlob);
+        const resolvedSize = `${(finalBlob.size / (1024 * 1024)).toFixed(1)} MB`;
+        setDownloadSize(resolvedSize);
 
         const fileExt = selectedQuality === 'audio' ? 'mp3' : 'mp4';
         const cleanTitle = (videoInfo?.title || 'Video').replace(/[\\/:*?"<>|]/g, '_');
@@ -1050,7 +1082,7 @@ function App() {
           thumbnail: videoInfo.thumbnail,
           platform: videoInfo.platform,
           quality: selectedQuality,
-          size: downloadSize,
+          size: resolvedSize,
           date: new Date().toLocaleDateString(),
           downloadUrl: localDownloadUrl
         };
@@ -1063,6 +1095,21 @@ function App() {
         const fileExt = selectedQuality === 'audio' ? 'mp3' : 'mp4';
         const cleanTitle = (videoInfo?.title || 'Video').replace(/[\\/:*?"<>|]/g, '_');
         const finalFileName = `[Any Downloader] - ${cleanTitle}.${fileExt}`;
+
+        // Estimate size for redirect fallback:
+        const durationSec = videoInfo.duration_raw || 60;
+        const bitrates = {
+          '4k': 1.875 * 1024 * 1024,
+          '2k': 0.75 * 1024 * 1024,
+          '1080p': 0.375 * 1024 * 1024,
+          '720p': 0.1875 * 1024 * 1024,
+          '480p': 0.1 * 1024 * 1024,
+          '360p': 0.0625 * 1024 * 1024,
+          'audio': 0.02 * 1024 * 1024
+        };
+        const factor = bitrates[selectedQuality] || bitrates['1080p'];
+        const estSize = `${((durationSec * factor) / (1024 * 1024)).toFixed(1)} MB`;
+        setDownloadSize(estSize);
 
         setCompletedBlobUrl(cobaltStreamUrl);
         setCompletedFileName(finalFileName);
@@ -1079,6 +1126,19 @@ function App() {
         document.body.appendChild(downloadLink);
         downloadLink.click();
         downloadLink.remove();
+
+        // Add to local history list for redirect fallback too!
+        const newHistoryItem = {
+          id: generateUUID(),
+          title: videoInfo.title,
+          thumbnail: videoInfo.thumbnail,
+          platform: videoInfo.platform,
+          quality: selectedQuality,
+          size: estSize,
+          date: new Date().toLocaleDateString(),
+          downloadUrl: cobaltStreamUrl
+        };
+        saveHistory([newHistoryItem, ...history]);
         clientDownloadSuccess = true;
       }
     }
