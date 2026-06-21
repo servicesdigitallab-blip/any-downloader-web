@@ -58,7 +58,7 @@ const app = express();
 const PORT = process.env.PORT || 5000;
 
 // Setup directories
-const isVercel = process.env.VERCEL === '1' || !!process.env.VERCEL;
+const isVercel = process.env.VERCEL === '1' || !!process.env.VERCEL || !!process.env.NOW_REGION || !!process.env.AWS_LAMBDA_FUNCTION_NAME;
 let BIN_DIR = path.join(__dirname, 'bin');
 if (isVercel && !fs.existsSync(BIN_DIR) && fs.existsSync(path.join(__dirname, '..', 'bin'))) {
   BIN_DIR = path.join(__dirname, '..', 'bin');
@@ -1664,8 +1664,9 @@ app.get('/api/progress/:jobId', (req, res) => {
 
   // Set headers for Server-Sent Events (SSE)
   res.setHeader('Content-Type', 'text/event-stream');
-  res.setHeader('Cache-Control', 'no-cache');
+  res.setHeader('Cache-Control', 'no-cache, no-transform');
   res.setHeader('Connection', 'keep-alive');
+  res.setHeader('X-Accel-Buffering', 'no');
   res.flushHeaders();
 
   // Register client
@@ -1681,8 +1682,14 @@ app.get('/api/progress/:jobId', (req, res) => {
     error: job.error
   })}\n\n`);
 
+  // Active heartbeat keeping the connection alive every 5s on proxies/Vite
+  const heartbeat = setInterval(() => {
+    res.write(':\n\n');
+  }, 5000);
+
   // Remove client on connection close
   req.on('close', () => {
+    clearInterval(heartbeat);
     job.clients = job.clients.filter(client => client !== res);
   });
 });

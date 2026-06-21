@@ -741,8 +741,189 @@ function App() {
     }
 
     let serverDownloadSuccess = false;
-    let cobaltStreamUrl = '';
-    let cobaltFileName = '';
+
+    const runClientFallback = async () => {
+      // Phase 2: Client-side Cobalt fallback
+      let instances = [];
+      try {
+        setDownloadSpeed('Connecting to fallback servers...');
+        const instRes = await fetch(`${API_BASE}/api/cobalt-instances`);
+        if (instRes.ok) {
+          const instData = await instRes.json();
+          instances = instData.instances || [];
+        }
+      } catch (e) {
+        console.warn('Failed to fetch dynamic Cobalt instances:', e);
+      }
+
+      if (instances.length === 0) {
+        instances = [
+          'https://dog.kittycat.boo',
+          'https://cobaltapi.kittycat.boo',
+          'https://rue-cobalt.xenon.zone',
+          'https://fox.kittycat.boo',
+          'https://api.cobalt.liubquanti.click',
+          'https://api.cobalt.blackcat.sweeux.org',
+          'https://cobaltapi.cjs.nz',
+          'https://sunny.imput.net',
+          'https://kityune.imput.net',
+          'https://nachos.imput.net',
+          'https://blossom.imput.net',
+          'https://subito-c.meowing.de'
+        ];
+      }
+
+      let success = false;
+      let cobaltStreamUrl = '';
+      let cobaltFileName = '';
+
+      const targetInstances = instances.slice(0, 16);
+      try {
+        const promises = targetInstances.map(async (instance) => {
+          const res = await fetch(instance, {
+            method: 'POST',
+            headers: {
+              'Accept': 'application/json',
+              'Content-Type': 'application/json'
+            },
+            body: JSON.stringify({
+              url: videoInfo.originalUrl,
+              videoQuality: videoQuality,
+              downloadMode: downloadMode
+            }),
+            signal: AbortSignal.timeout(10000)
+          });
+
+          if (!res.ok) throw new Error('Not ok');
+          const data = await res.json();
+          let resolvedUrl = '';
+          let resolvedFilename = '';
+
+          if (data && (data.status === 'redirect' || data.status === 'tunnel' || data.url)) {
+            resolvedUrl = data.url;
+            resolvedFilename = data.filename || `download.${selectedQuality === 'audio' ? 'mp3' : 'mp4'}`;
+          } else if (data && data.status === 'picker' && data.picker && data.picker.length > 0) {
+            const item = data.picker.find(p => p.type === 'video') || data.picker[0];
+            resolvedUrl = item.url;
+            resolvedFilename = data.filename || `download.${selectedQuality === 'audio' ? 'mp3' : 'mp4'}`;
+          }
+
+          if (resolvedUrl) {
+            // Pre-fetch check via chunk proxy to bypass browser CORS block and ensure stream is not empty
+            console.log(`[Frontend Precheck] Verifying resolved URL from ${instance} via proxy: ${resolvedUrl}`);
+            const checkUrl = `${API_BASE}/api/chunk?url=${encodeURIComponent(resolvedUrl)}&start=0&end=99`;
+            const streamCheck = await fetch(checkUrl, { signal: AbortSignal.timeout(4000) });
+            if (!streamCheck.ok) {
+              throw new Error(`Proxy pre-check failed with status ${streamCheck.status}`);
+            }
+            const checkBuf = await streamCheck.arrayBuffer();
+            if (checkBuf.byteLength === 0) {
+              throw new Error('Proxy pre-check returned empty stream (0 bytes), likely blocked by YouTube.');
+            }
+            console.log(`[Frontend Precheck] Successfully verified stream from ${instance}!`);
+
+            return {
+              url: resolvedUrl,
+              filename: resolvedFilename,
+              instance
+            };
+          }
+          throw new Error('Invalid format');
+        });
+
+        const fastestResult = await Promise.any(promises);
+        if (fastestResult) {
+          cobaltStreamUrl = fastestResult.url;
+          cobaltFileName = fastestResult.filename;
+          success = true;
+        }
+      } catch (anyErr) {
+        console.warn('All parallel client-side Cobalt checks failed:', anyErr.message);
+      }
+
+      let clientDownloadSuccess = false;
+
+      if (success) {
+        targetProgressRef.current = 1;
+        setDownloadStatus('downloading');
+        setDownloadSpeed('Initializing stream...');
+        
+        let totalSize = 0;
+        let isEstimated = true;
+
+        const durationSec = videoInfo.duration_raw || 60;
+        const bitrates = {
+          '4k': 1.875 * 1024 * 1024,
+          '2k': 0.75 * 1024 * 1024,
+          '1080p': 0.375 * 1024 * 1024,
+          '720p': 0.1875 * 1024 * 1024,
+          '480p': 0.1 * 1024 * 1024,
+          '360p': 0.0625 * 1024 * 1024,
+          'audio': 0.02 * 1024 * 1024
+        };
+        const factor = bitrates[selectedQuality] || bitrates['1080p'];
+        totalSize = Math.round(durationSec * factor);
+
+        try {
+          const finalBlob = await downloadStreamAsBlob({
+            streamUrl: cobaltStreamUrl,
+            totalSize,
+            isEstimated,
+            selectedQuality,
+            setDownloadProgress,
+            targetProgressRef,
+            setDownloadSpeed,
+            setDownloadSize,
+          });
+
+          const localDownloadUrl = URL.createObjectURL(finalBlob);
+          const resolvedSize = `${(finalBlob.size / (1024 * 1024)).toFixed(1)} MB`;
+          setDownloadSize(resolvedSize);
+
+          const fileExt = selectedQuality === 'audio' ? 'mp3' : 'mp4';
+          const cleanTitle = (videoInfo?.title || 'Video').replace(/[\\/:*?"<>|]/g, '_');
+          const finalFileName = `[Any Downloader] - ${cleanTitle}.${fileExt}`;
+
+          setCompletedBlobUrl(localDownloadUrl);
+          setCompletedFileName(finalFileName);
+          targetProgressRef.current = 100;
+          displayedProgressRef.current = 100;
+          setDownloadProgress(100);
+          setDownloadStatus('completed');
+
+          const downloadLink = document.createElement('a');
+          downloadLink.href = localDownloadUrl;
+          downloadLink.setAttribute('download', finalFileName);
+          document.body.appendChild(downloadLink);
+          downloadLink.click();
+          downloadLink.remove();
+
+          const newHistoryItem = {
+            id: generateUUID(),
+            title: videoInfo.title,
+            thumbnail: videoInfo.thumbnail,
+            platform: videoInfo.platform,
+            quality: selectedQuality,
+            size: resolvedSize,
+            date: new Date().toLocaleDateString(),
+            downloadUrl: localDownloadUrl
+          };
+          saveHistory([newHistoryItem, ...history]);
+          clientDownloadSuccess = true;
+
+        } catch (clientErr) {
+          console.error('Phase 2 direct/chunked download failed:', clientErr.message);
+          setDownloadStatus('error');
+          setDownloadError(`Download failed: ${clientErr.message || 'Stream is empty or blocked.'}`);
+          clientDownloadSuccess = false;
+        }
+      }
+
+      if (!clientDownloadSuccess) {
+        setDownloadStatus('error');
+        setDownloadError('Download failed. Please try a different quality or link.');
+      }
+    };
 
     // Phase 1: Try server-side download first
     try {
@@ -818,74 +999,74 @@ function App() {
         if (serverDownloadSuccess) {
           return;
         }
+      } else {
+        const activeJobId = data.jobId;
+        setJobId(activeJobId);
+        targetProgressRef.current = 1;
+        setDownloadStatus('downloading');
+
+        const eventSource = new EventSource(`${API_BASE}/api/progress/${activeJobId}`);
+
+        eventSource.onmessage = (event) => {
+          const jobUpdate = JSON.parse(event.data);
+
+          setDownloadStatus(jobUpdate.status);
+          targetProgressRef.current = jobUpdate.progress;
+          setDownloadSpeed(jobUpdate.speed);
+          setDownloadEta(jobUpdate.eta);
+          setDownloadSize(jobUpdate.size);
+          
+          if (jobUpdate.status === 'error') {
+            setDownloadError(jobUpdate.error);
+            eventSource.close();
+          }
+
+          if (jobUpdate.status === 'completed') {
+            eventSource.close();
+            setHasRedirected(false);
+            
+            const fileExt = selectedQuality === 'audio' ? 'mp3' : 'mp4';
+            const cleanTitle = (videoInfo?.title || 'Video').replace(/[\\/:*?"<>|]/g, '_');
+            const finalFileName = `[Any Downloader] - ${cleanTitle}.${fileExt}`;
+            
+            setCompletedBlobUrl(`${API_BASE}/api/file/${activeJobId}`);
+            setCompletedFileName(finalFileName);
+            targetProgressRef.current = 100;
+            displayedProgressRef.current = 100;
+            setDownloadProgress(100);
+            setDownloadStatus('completed');
+
+            const downloadLink = document.createElement('a');
+            downloadLink.href = `${API_BASE}/api/file/${activeJobId}`;
+            downloadLink.setAttribute('download', finalFileName);
+            document.body.appendChild(downloadLink);
+            downloadLink.click();
+            downloadLink.remove();
+
+            // Add to local history list
+            const newHistoryItem = {
+              id: activeJobId,
+              title: videoInfo.title,
+              thumbnail: videoInfo.thumbnail,
+              platform: videoInfo.platform,
+              quality: selectedQuality,
+              size: jobUpdate.size || downloadSize,
+              date: new Date().toLocaleDateString(),
+              downloadUrl: `${API_BASE}/api/file/${activeJobId}`
+            };
+            saveHistory([newHistoryItem, ...history]);
+          }
+        };
+
+        eventSource.onerror = () => {
+          console.warn('Connection to progress server lost, falling back to client-side Cobalt...');
+          eventSource.close();
+          runClientFallback();
+        };
+
+        // Keep this execution path
+        serverDownloadSuccess = true;
       }
-
-      const activeJobId = data.jobId;
-      setJobId(activeJobId);
-      targetProgressRef.current = 1;
-      setDownloadStatus('downloading');
-
-      const eventSource = new EventSource(`${API_BASE}/api/progress/${activeJobId}`);
-
-      eventSource.onmessage = (event) => {
-        const jobUpdate = JSON.parse(event.data);
-
-        setDownloadStatus(jobUpdate.status);
-        targetProgressRef.current = jobUpdate.progress;
-        setDownloadSpeed(jobUpdate.speed);
-        setDownloadEta(jobUpdate.eta);
-        setDownloadSize(jobUpdate.size);
-        
-        if (jobUpdate.status === 'error') {
-          setDownloadError(jobUpdate.error);
-          eventSource.close();
-        }
-
-        if (jobUpdate.status === 'completed') {
-          eventSource.close();
-          setHasRedirected(false);
-          
-          const fileExt = selectedQuality === 'audio' ? 'mp3' : 'mp4';
-          const cleanTitle = (videoInfo?.title || 'Video').replace(/[\\/:*?"<>|]/g, '_');
-          const finalFileName = `[Any Downloader] - ${cleanTitle}.${fileExt}`;
-          
-          setCompletedBlobUrl(`${API_BASE}/api/file/${activeJobId}`);
-          setCompletedFileName(finalFileName);
-          targetProgressRef.current = 100;
-          displayedProgressRef.current = 100;
-          setDownloadProgress(100);
-          setDownloadStatus('completed');
-
-          const downloadLink = document.createElement('a');
-          downloadLink.href = `${API_BASE}/api/file/${activeJobId}`;
-          downloadLink.setAttribute('download', finalFileName);
-          document.body.appendChild(downloadLink);
-          downloadLink.click();
-          downloadLink.remove();
-
-          // Add to local history list
-          const newHistoryItem = {
-            id: activeJobId,
-            title: videoInfo.title,
-            thumbnail: videoInfo.thumbnail,
-            platform: videoInfo.platform,
-            quality: selectedQuality,
-            size: jobUpdate.size || downloadSize,
-            date: new Date().toLocaleDateString(),
-            downloadUrl: `${API_BASE}/api/file/${activeJobId}`
-          };
-          saveHistory([newHistoryItem, ...history]);
-        }
-      };
-
-      eventSource.onerror = () => {
-        setDownloadStatus('error');
-        setDownloadError('Connection to progress server lost.');
-        eventSource.close();
-      };
-
-      // Keep this execution path
-      serverDownloadSuccess = true;
 
     } catch (serverErr) {
       console.warn('Server-side download pipeline failed, running client-side Cobalt fallback...', serverErr.message);
@@ -895,186 +1076,7 @@ function App() {
       return;
     }
 
-    // Phase 2: Client-side Cobalt fallback
-    let instances = [];
-    try {
-      setDownloadSpeed('Connecting to fallback servers...');
-      const instRes = await fetch(`${API_BASE}/api/cobalt-instances`);
-      if (instRes.ok) {
-        const instData = await instRes.json();
-        instances = instData.instances || [];
-      }
-    } catch (e) {
-      console.warn('Failed to fetch dynamic Cobalt instances:', e);
-    }
-
-    if (instances.length === 0) {
-      instances = [
-        'https://dog.kittycat.boo',
-        'https://cobaltapi.kittycat.boo',
-        'https://rue-cobalt.xenon.zone',
-        'https://fox.kittycat.boo',
-        'https://api.cobalt.liubquanti.click',
-        'https://api.cobalt.blackcat.sweeux.org',
-        'https://cobaltapi.cjs.nz',
-        'https://sunny.imput.net',
-        'https://kityune.imput.net',
-        'https://nachos.imput.net',
-        'https://blossom.imput.net',
-        'https://subito-c.meowing.de'
-      ];
-    }
-
-    let success = false;
-
-    const targetInstances = instances.slice(0, 16);
-    try {
-      const promises = targetInstances.map(async (instance) => {
-        const res = await fetch(instance, {
-          method: 'POST',
-          headers: {
-            'Accept': 'application/json',
-            'Content-Type': 'application/json'
-          },
-          body: JSON.stringify({
-            url: videoInfo.originalUrl,
-            videoQuality: videoQuality,
-            downloadMode: downloadMode
-          }),
-          signal: AbortSignal.timeout(10000)
-        });
-
-        if (!res.ok) throw new Error('Not ok');
-        const data = await res.json();
-        let resolvedUrl = '';
-        let resolvedFilename = '';
-
-        if (data && (data.status === 'redirect' || data.status === 'tunnel' || data.url)) {
-          resolvedUrl = data.url;
-          resolvedFilename = data.filename || `download.${selectedQuality === 'audio' ? 'mp3' : 'mp4'}`;
-        } else if (data && data.status === 'picker' && data.picker && data.picker.length > 0) {
-          const item = data.picker.find(p => p.type === 'video') || data.picker[0];
-          resolvedUrl = item.url;
-          resolvedFilename = data.filename || `download.${selectedQuality === 'audio' ? 'mp3' : 'mp4'}`;
-        }
-
-        if (resolvedUrl) {
-          // Pre-fetch check via chunk proxy to bypass browser CORS block and ensure stream is not empty
-          console.log(`[Frontend Precheck] Verifying resolved URL from ${instance} via proxy: ${resolvedUrl}`);
-          const checkUrl = `${API_BASE}/api/chunk?url=${encodeURIComponent(resolvedUrl)}&start=0&end=99`;
-          const streamCheck = await fetch(checkUrl, { signal: AbortSignal.timeout(4000) });
-          if (!streamCheck.ok) {
-            throw new Error(`Proxy pre-check failed with status ${streamCheck.status}`);
-          }
-          const checkBuf = await streamCheck.arrayBuffer();
-          if (checkBuf.byteLength === 0) {
-            throw new Error('Proxy pre-check returned empty stream (0 bytes), likely blocked by YouTube.');
-          }
-          console.log(`[Frontend Precheck] Successfully verified stream from ${instance}!`);
-
-          return {
-            url: resolvedUrl,
-            filename: resolvedFilename,
-            instance
-          };
-        }
-        throw new Error('Invalid format');
-      });
-
-      const fastestResult = await Promise.any(promises);
-      if (fastestResult) {
-        cobaltStreamUrl = fastestResult.url;
-        cobaltFileName = fastestResult.filename;
-        success = true;
-      }
-    } catch (anyErr) {
-      console.warn('All parallel client-side Cobalt checks failed:', anyErr.message);
-    }
-
-    let clientDownloadSuccess = false;
-
-    if (success) {
-      targetProgressRef.current = 1;
-      setDownloadStatus('downloading');
-      setDownloadSpeed('Initializing stream...');
-      
-      let totalSize = 0;
-      let isEstimated = true;
-
-      const durationSec = videoInfo.duration_raw || 60;
-      const bitrates = {
-        '4k': 1.875 * 1024 * 1024,
-        '2k': 0.75 * 1024 * 1024,
-        '1080p': 0.375 * 1024 * 1024,
-        '720p': 0.1875 * 1024 * 1024,
-        '480p': 0.1 * 1024 * 1024,
-        '360p': 0.0625 * 1024 * 1024,
-        'audio': 0.02 * 1024 * 1024
-      };
-      const factor = bitrates[selectedQuality] || bitrates['1080p'];
-      totalSize = Math.round(durationSec * factor);
-
-      try {
-        const finalBlob = await downloadStreamAsBlob({
-          streamUrl: cobaltStreamUrl,
-          totalSize,
-          isEstimated,
-          selectedQuality,
-          setDownloadProgress,
-          targetProgressRef,
-          setDownloadSpeed,
-          setDownloadSize,
-        });
-
-        const localDownloadUrl = URL.createObjectURL(finalBlob);
-        const resolvedSize = `${(finalBlob.size / (1024 * 1024)).toFixed(1)} MB`;
-        setDownloadSize(resolvedSize);
-
-        const fileExt = selectedQuality === 'audio' ? 'mp3' : 'mp4';
-        const cleanTitle = (videoInfo?.title || 'Video').replace(/[\\/:*?"<>|]/g, '_');
-        const finalFileName = `[Any Downloader] - ${cleanTitle}.${fileExt}`;
-
-        setCompletedBlobUrl(localDownloadUrl);
-        setCompletedFileName(finalFileName);
-        targetProgressRef.current = 100;
-        displayedProgressRef.current = 100;
-        setDownloadProgress(100);
-        setDownloadStatus('completed');
-
-        const downloadLink = document.createElement('a');
-        downloadLink.href = localDownloadUrl;
-        downloadLink.setAttribute('download', finalFileName);
-        document.body.appendChild(downloadLink);
-        downloadLink.click();
-        downloadLink.remove();
-
-        const newHistoryItem = {
-          id: generateUUID(),
-          title: videoInfo.title,
-          thumbnail: videoInfo.thumbnail,
-          platform: videoInfo.platform,
-          quality: selectedQuality,
-          size: resolvedSize,
-          date: new Date().toLocaleDateString(),
-          downloadUrl: localDownloadUrl
-        };
-        saveHistory([newHistoryItem, ...history]);
-        clientDownloadSuccess = true;
-
-      } catch (clientErr) {
-        console.error('Phase 2 direct/chunked download failed:', clientErr.message);
-        setDownloadStatus('error');
-        setDownloadError(`Download failed: ${clientErr.message || 'Stream is empty or blocked.'}`);
-        clientDownloadSuccess = false;
-      }
-    }
-
-    if (clientDownloadSuccess) {
-      return;
-    }
-
-    setDownloadStatus('error');
-    setDownloadError('Download failed. Please try a different quality or link.');
+    await runClientFallback();
   };
 
   // Redirection popunder handler
