@@ -584,32 +584,30 @@ function App() {
             displayedProgressRef.current = next;
             setDownloadProgress(next);
           } else {
-            crawlCounterRef.current += 1;
-            let ticksPerIncrement = 5; // default for starting < 40 (every 150ms at 30ms interval)
-            let maxCrawl = 95;
+            // Only crawl if we are in starting or merging phases
+            if (status === 'starting' || status === 'merging') {
+              crawlCounterRef.current += 1;
+              let ticksPerIncrement = 5; // default for starting < 20 (every 150ms at 30ms interval)
+              let maxCrawl = 35; // Cap starting crawl to 35% so it doesn't run ahead of actual download bytes
 
-            if (status === 'starting') {
-              if (current >= 40 && current < 75) {
-                ticksPerIncrement = 10; // every 300ms
-              } else if (current >= 75 && current < 90) {
-                ticksPerIncrement = 20; // every 600ms
-              } else if (current >= 90) {
-                ticksPerIncrement = 45; // every 1.35s
+              if (status === 'starting') {
+                if (current >= 20 && current < 30) {
+                  ticksPerIncrement = 15; // every 450ms
+                } else if (current >= 30) {
+                  ticksPerIncrement = 45; // every 1.35s
+                }
+              } else if (status === 'merging') {
+                ticksPerIncrement = 30; // merging crawls slowly from 95% to 99%
+                maxCrawl = 99;
               }
-            } else if (status === 'downloading') {
-              ticksPerIncrement = 15; // every 450ms
-              maxCrawl = 98;
-            } else if (status === 'merging') {
-              ticksPerIncrement = 30; // every 900ms
-              maxCrawl = 99;
-            }
 
-            if (crawlCounterRef.current >= ticksPerIncrement) {
-              crawlCounterRef.current = 0;
-              if (current < maxCrawl) {
-                const next = current + 1;
-                displayedProgressRef.current = next;
-                setDownloadProgress(next);
+              if (crawlCounterRef.current >= ticksPerIncrement) {
+                crawlCounterRef.current = 0;
+                if (current < maxCrawl) {
+                  const next = current + 1;
+                  displayedProgressRef.current = next;
+                  setDownloadProgress(next);
+                }
               }
             }
           }
