@@ -239,7 +239,7 @@ async function downloadStreamAsBlob({
 
     while (hasMore) {
       const end = start + chunkSize - 1;
-      const actualEnd = activeTotal > 0 ? Math.min(end, activeTotal - 1) : end;
+      const actualEnd = (activeTotal > 0 && !localIsEstimated) ? Math.min(end, activeTotal - 1) : end;
       const chunkUrl = `${API_BASE}/api/chunk?url=${encodeURIComponent(streamUrl)}&start=${start}&end=${actualEnd}`;
 
       try {
@@ -282,12 +282,12 @@ async function downloadStreamAsBlob({
         }
 
         // If chunk is empty or smaller than requested range (and we didn't cap it by activeTotal), we reached end
-        if (chunkBytesFetched === 0 || (activeTotal > 0 && start + chunkBytesFetched >= activeTotal)) {
+        if (chunkBytesFetched === 0 || (!localIsEstimated && activeTotal > 0 && start + chunkBytesFetched >= activeTotal)) {
           hasMore = false;
         } else {
           start += chunkBytesFetched;
-          // If chunkBytesFetched was smaller than chunkSize, we likely reached the end of file
-          if (chunkBytesFetched < chunkSize && localIsEstimated) {
+          // If chunkBytesFetched was smaller than chunkSize, we reached the true end of stream
+          if (chunkBytesFetched < chunkSize) {
             hasMore = false;
           }
         }

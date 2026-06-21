@@ -278,6 +278,7 @@ async function fetchFromCobalt(videoUrl, quality) {
       // Pre-check stream
       let precheckOk = false;
       let precheckError = '';
+      let streamTotalSize = 0;
       try {
         console.log(`[Backend Precheck] Verifying resolved URL from ${instance}: ${resolvedUrl}`);
         const checkRes = await fetch(resolvedUrl, {
@@ -295,6 +296,20 @@ async function fetchFromCobalt(videoUrl, quality) {
           throw new Error('Stream returned empty (0 bytes) response, likely blocked by YouTube.');
         }
         
+        const contentRange = checkRes.headers.get('content-range');
+        if (contentRange) {
+          const match = contentRange.match(/\/(\d+)/);
+          if (match) {
+            streamTotalSize = parseInt(match[1], 10);
+          }
+        }
+        if (!streamTotalSize && checkRes.status === 200) {
+          const len = checkRes.headers.get('content-length');
+          if (len) {
+            streamTotalSize = parseInt(len, 10);
+          }
+        }
+
         const reader = checkRes.body?.getReader();
         if (reader) {
           const { done, value } = await reader.read();
@@ -321,7 +336,8 @@ async function fetchFromCobalt(videoUrl, quality) {
         filename: resolvedFilename,
         instance,
         precheckOk,
-        precheckError
+        precheckError,
+        totalSize: streamTotalSize
       };
     } catch (err) {
       throw err;
@@ -338,7 +354,8 @@ async function fetchFromCobalt(videoUrl, quality) {
     console.log(`Backend parallel Cobalt fetch succeeded with verified instance: ${verifiedCandidate.value.instance}`);
     return {
       url: verifiedCandidate.value.url,
-      filename: verifiedCandidate.value.filename
+      filename: verifiedCandidate.value.filename,
+      totalSize: verifiedCandidate.value.totalSize
     };
   }
 
@@ -350,7 +367,8 @@ async function fetchFromCobalt(videoUrl, quality) {
     console.warn(`Backend parallel Cobalt fetch did not find a verified stream, falling back to unverified instance: ${fallbackCandidate.value.instance}`);
     return {
       url: fallbackCandidate.value.url,
-      filename: fallbackCandidate.value.filename
+      filename: fallbackCandidate.value.filename,
+      totalSize: fallbackCandidate.value.totalSize
     };
   }
 
@@ -1399,6 +1417,7 @@ app.post('/api/download', async (req, res) => {
 
         return res.json({
           streamUrl: cobaltResult.url,
+          totalSize: cobaltResult.totalSize,
           fileName
         });
       } catch (cobaltErr) {
@@ -1434,6 +1453,7 @@ app.post('/api/download', async (req, res) => {
 
         return res.json({
           streamUrl: cobaltResult.url,
+          totalSize: cobaltResult.totalSize,
           fileName
         });
       } catch (cobaltErr) {
