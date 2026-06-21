@@ -163,7 +163,22 @@ async function downloadStreamAsBlob({
       resetTimeout();
 
       while (true) {
-        const { done, value } = await reader.read();
+        let done = false;
+        let value = null;
+        try {
+          const result = await reader.read();
+          done = result.done;
+          value = result.value;
+        } catch (readErr) {
+          const limit = exactLength || activeTotal || 0;
+          if (downloadedBytes > 0 && limit > 0 && downloadedBytes >= limit * 0.9) {
+            console.warn('Stream read failed near the end, but downloaded >90%. Proceeding with partial stream:', readErr.message);
+            break;
+          } else {
+            throw readErr;
+          }
+        }
+
         if (done) break;
 
         resetTimeout();
@@ -193,7 +208,11 @@ async function downloadStreamAsBlob({
 
       // Anti-corruption check (only if exact content-length header was sent by server)
       if (exactLength > 0 && downloadedBytes < exactLength) {
-        throw new Error('Download interrupted or incomplete.');
+        if (downloadedBytes >= exactLength * 0.9) {
+          console.warn(`Download slightly incomplete (${downloadedBytes}/${exactLength}), but >90%. Saving partial file.`);
+        } else {
+          throw new Error('Download interrupted or incomplete.');
+        }
       }
 
       directFetchSuccess = true;
