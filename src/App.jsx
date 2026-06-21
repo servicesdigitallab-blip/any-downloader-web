@@ -811,58 +811,13 @@ function App() {
           serverDownloadSuccess = true;
 
         } catch (downloadErr) {
-          console.warn('Unified download pipeline failed on backend stream, falling back to direct redirect:', downloadErr.message);
-          
-          const fileExt = selectedQuality === 'audio' ? 'mp3' : 'mp4';
-          const cleanTitle = (videoInfo?.title || 'Video').replace(/[\\/:*?"<>|]/g, '_');
-          const finalFileName = `[Any Downloader] - ${cleanTitle}.${fileExt}`;
-
-          // Estimate size for redirect fallback:
-          const durationSec = videoInfo.duration_raw || 60;
-          const bitrates = {
-            '4k': 1.875 * 1024 * 1024,
-            '2k': 0.75 * 1024 * 1024,
-            '1080p': 0.375 * 1024 * 1024,
-            '720p': 0.1875 * 1024 * 1024,
-            '480p': 0.1 * 1024 * 1024,
-            '360p': 0.0625 * 1024 * 1024,
-            'audio': 0.02 * 1024 * 1024
-          };
-          const factor = bitrates[selectedQuality] || bitrates['1080p'];
-          const estSize = `${((durationSec * factor) / (1024 * 1024)).toFixed(1)} MB`;
-          setDownloadSize(estSize);
-
-          setCompletedBlobUrl(streamUrl);
-          setCompletedFileName(finalFileName);
-          targetProgressRef.current = 100;
-          displayedProgressRef.current = 100;
-          setDownloadProgress(100);
-          setDownloadStatus('completed');
-          
-          const downloadLink = document.createElement('a');
-          downloadLink.href = streamUrl;
-          downloadLink.setAttribute('download', finalFileName);
-          downloadLink.setAttribute('target', '_blank');
-          downloadLink.setAttribute('rel', 'noreferrer');
-          document.body.appendChild(downloadLink);
-          downloadLink.click();
-          downloadLink.remove();
-
-          // Add to local history list for redirect fallback too!
-          const newHistoryItem = {
-            id: generateUUID(),
-            title: videoInfo.title,
-            thumbnail: videoInfo.thumbnail,
-            platform: videoInfo.platform,
-            quality: selectedQuality,
-            size: estSize,
-            date: new Date().toLocaleDateString(),
-            downloadUrl: streamUrl
-          };
-          saveHistory([newHistoryItem, ...history]);
-          serverDownloadSuccess = true;
+          console.warn('Unified download pipeline failed on backend stream, falling back to client-side Cobalt:', downloadErr.message);
+          serverDownloadSuccess = false;
         }
-        return;
+
+        if (serverDownloadSuccess) {
+          return;
+        }
       }
 
       const activeJobId = data.jobId;
@@ -1107,56 +1062,10 @@ function App() {
         clientDownloadSuccess = true;
 
       } catch (clientErr) {
-        console.warn('Phase 2 direct/chunked download failed, falling back to direct redirect:', clientErr.message);
-        
-        const fileExt = selectedQuality === 'audio' ? 'mp3' : 'mp4';
-        const cleanTitle = (videoInfo?.title || 'Video').replace(/[\\/:*?"<>|]/g, '_');
-        const finalFileName = `[Any Downloader] - ${cleanTitle}.${fileExt}`;
-
-        // Estimate size for redirect fallback:
-        const durationSec = videoInfo.duration_raw || 60;
-        const bitrates = {
-          '4k': 1.875 * 1024 * 1024,
-          '2k': 0.75 * 1024 * 1024,
-          '1080p': 0.375 * 1024 * 1024,
-          '720p': 0.1875 * 1024 * 1024,
-          '480p': 0.1 * 1024 * 1024,
-          '360p': 0.0625 * 1024 * 1024,
-          'audio': 0.02 * 1024 * 1024
-        };
-        const factor = bitrates[selectedQuality] || bitrates['1080p'];
-        const estSize = `${((durationSec * factor) / (1024 * 1024)).toFixed(1)} MB`;
-        setDownloadSize(estSize);
-
-        setCompletedBlobUrl(cobaltStreamUrl);
-        setCompletedFileName(finalFileName);
-        targetProgressRef.current = 100;
-        displayedProgressRef.current = 100;
-        setDownloadProgress(100);
-        setDownloadStatus('completed');
-        
-        const downloadLink = document.createElement('a');
-        downloadLink.href = cobaltStreamUrl;
-        downloadLink.setAttribute('download', finalFileName);
-        downloadLink.setAttribute('target', '_blank');
-        downloadLink.setAttribute('rel', 'noreferrer');
-        document.body.appendChild(downloadLink);
-        downloadLink.click();
-        downloadLink.remove();
-
-        // Add to local history list for redirect fallback too!
-        const newHistoryItem = {
-          id: generateUUID(),
-          title: videoInfo.title,
-          thumbnail: videoInfo.thumbnail,
-          platform: videoInfo.platform,
-          quality: selectedQuality,
-          size: estSize,
-          date: new Date().toLocaleDateString(),
-          downloadUrl: cobaltStreamUrl
-        };
-        saveHistory([newHistoryItem, ...history]);
-        clientDownloadSuccess = true;
+        console.error('Phase 2 direct/chunked download failed:', clientErr.message);
+        setDownloadStatus('error');
+        setDownloadError(`Download failed: ${clientErr.message || 'Stream is empty or blocked.'}`);
+        clientDownloadSuccess = false;
       }
     }
 
