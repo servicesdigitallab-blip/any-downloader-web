@@ -243,7 +243,8 @@ async function downloadStreamAsBlob({
       const chunkUrl = `${API_BASE}/api/chunk?url=${encodeURIComponent(streamUrl)}&start=${start}&end=${actualEnd}`;
 
       try {
-        const chunkResponse = await fetch(chunkUrl, { signal: AbortSignal.timeout(15000) });
+        const chunkController = new AbortController();
+        const chunkResponse = await fetch(chunkUrl, { signal: chunkController.signal });
         if (!chunkResponse.ok) {
           if (start > 0) {
             console.log("Chunk request failed (likely reached end of stream):", chunkResponse.status);
@@ -254,12 +255,69 @@ async function downloadStreamAsBlob({
           }
         }
 
+        // Discover exact total stream size from chunkResponse headers
+        if (localIsEstimated) {
+          const contentRange = chunkResponse.headers.get('content-range');
+          if (contentRange) {
+            const match = contentRange.match(/\/(\d+)/);
+            if (match) {
+              const parsedSize = parseInt(match[1], 10);
+              if (parsedSize > 0) {
+                activeTotal = parsedSize;
+                localIsEstimated = false;
+                console.log(`[ChunkProxy] Discovered exact stream size from content-range: ${activeTotal} bytes`);
+              }
+            }
+          }
+          if (localIsEstimated && chunkResponse.status === 200) {
+            const len = chunkResponse.headers.get('content-length');
+            if (len) {
+              const parsedSize = parseInt(len, 10);
+              if (parsedSize > 0) {
+                activeTotal = parsedSize;
+                localIsEstimated = false;
+                console.log(`[ChunkProxy] Discovered exact stream size from content-length: ${activeTotal} bytes`);
+              }
+            }
+          }
+        }
+
         const reader = chunkResponse.body.getReader();
         let chunkBytesFetched = 0;
+        
+        let chunkTimeoutId = null;
+        const resetChunkTimeout = () => {
+          clearTimeout(chunkTimeoutId);
+          chunkTimeoutId = setTimeout(() => {
+            chunkController.abort();
+            console.warn(`Chunk stream hung at offset ${start} (no data for 15 seconds). Aborting.`);
+          }, 15000);
+        };
+
+        resetChunkTimeout();
 
         while (true) {
-          const { done, value } = await reader.read();
+          let done = false;
+          let value = null;
+          try {
+            const result = await reader.read();
+            done = result.done;
+            value = result.value;
+          } catch (readErr) {
+            clearTimeout(chunkTimeoutId);
+            // Toleration logic for connection drop during chunk read
+            if (downloadedBytes > 0 && activeTotal > 0 && downloadedBytes >= activeTotal * 0.9) {
+              console.warn('Stream read failed near the end of chunk, but downloaded >90%. Proceeding with partial stream:', readErr.message);
+              done = true;
+              break;
+            } else {
+              throw readErr;
+            }
+          }
+
           if (done) break;
+
+          resetChunkTimeout();
 
           chunks.push(value);
           downloadedBytes += value.length;
@@ -280,6 +338,8 @@ async function downloadStreamAsBlob({
           setDownloadSpeed(`${(downloadedBytes / (1024 * 1024)).toFixed(1)} MB / ${localIsEstimated ? '~' : ''}${totalMbStr} (${speed} MB/s)`);
           setDownloadSize(totalMbStr);
         }
+
+        clearTimeout(chunkTimeoutId);
 
         // If chunk is empty or smaller than requested range (and we didn't cap it by activeTotal), we reached end
         if (chunkBytesFetched === 0 || (!localIsEstimated && activeTotal > 0 && start + chunkBytesFetched >= activeTotal)) {
@@ -1063,32 +1123,60 @@ function App() {
             const cleanTitle = (videoInfo?.title || 'Video').replace(/[\\/:*?"<>|]/g, '_');
             const finalFileName = `[Any Downloader] - ${cleanTitle}.${fileExt}`;
             
-            setCompletedBlobUrl(`${API_BASE}/api/file/${activeJobId}`);
-            setCompletedFileName(finalFileName);
-            targetProgressRef.current = 100;
-            displayedProgressRef.current = 100;
-            setDownloadProgress(100);
-            setDownloadStatus('completed');
+            setDownloadStatus('downloading');
+            setDownloadSpeed('Saving file to your device...');
+            
+            const fileUrl = `${API_BASE}/api/file/${activeJobId}`;
+            
+            (async () => {
+              try {
+                const finalBlob = await downloadStreamAsBlob({
+                  streamUrl: fileUrl,
+                  totalSize: 0,
+                  isEstimated: true,
+                  selectedQuality,
+                  setDownloadProgress,
+                  targetProgressRef,
+                  setDownloadSpeed,
+                  setDownloadSize,
+                });
 
-            const downloadLink = document.createElement('a');
-            downloadLink.href = `${API_BASE}/api/file/${activeJobId}`;
-            downloadLink.setAttribute('download', finalFileName);
-            document.body.appendChild(downloadLink);
-            downloadLink.click();
-            downloadLink.remove();
+                const localDownloadUrl = URL.createObjectURL(finalBlob);
+                const resolvedSize = `${(finalBlob.size / (1024 * 1024)).toFixed(1)} MB`;
+                setDownloadSize(resolvedSize);
 
-            // Add to local history list
-            const newHistoryItem = {
-              id: activeJobId,
-              title: videoInfo.title,
-              thumbnail: videoInfo.thumbnail,
-              platform: videoInfo.platform,
-              quality: selectedQuality,
-              size: jobUpdate.size || downloadSize,
-              date: new Date().toLocaleDateString(),
-              downloadUrl: `${API_BASE}/api/file/${activeJobId}`
-            };
-            saveHistory([newHistoryItem, ...history]);
+                setCompletedBlobUrl(localDownloadUrl);
+                setCompletedFileName(finalFileName);
+                targetProgressRef.current = 100;
+                displayedProgressRef.current = 100;
+                setDownloadProgress(100);
+                setDownloadStatus('completed');
+
+                const downloadLink = document.createElement('a');
+                downloadLink.href = localDownloadUrl;
+                downloadLink.setAttribute('download', finalFileName);
+                document.body.appendChild(downloadLink);
+                downloadLink.click();
+                downloadLink.remove();
+
+                // Add to local history list
+                const newHistoryItem = {
+                  id: activeJobId,
+                  title: videoInfo.title,
+                  thumbnail: videoInfo.thumbnail,
+                  platform: videoInfo.platform,
+                  quality: selectedQuality,
+                  size: resolvedSize,
+                  date: new Date().toLocaleDateString(),
+                  downloadUrl: localDownloadUrl
+                };
+                saveHistory([newHistoryItem, ...history]);
+              } catch (err) {
+                console.error('Failed to download file from server job:', err);
+                setDownloadStatus('error');
+                setDownloadError('Failed to transfer file from server to device.');
+              }
+            })();
           }
         };
 
