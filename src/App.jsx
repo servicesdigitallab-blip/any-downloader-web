@@ -119,6 +119,28 @@ async function downloadStreamAsBlob({
   let directFetchSuccess = false;
   const startTime = Date.now();
 
+  let activeTotal = totalSize || 0;
+  let localIsEstimated = isEstimated === undefined ? !activeTotal : !!isEstimated;
+
+  // Resolve exact size from backend /api/size endpoint to ensure accurate progress/size and avoid 98% freezes
+  if (localIsEstimated) {
+    try {
+      console.log('Resolving exact size of stream from backend /api/size...');
+      const checkSizeUrl = `${API_BASE}/api/size?url=${encodeURIComponent(streamUrl)}`;
+      const sizeRes = await fetch(checkSizeUrl, { signal: AbortSignal.timeout(6000) });
+      if (sizeRes.ok) {
+        const sizeData = await sizeRes.json();
+        if (sizeData && sizeData.size && sizeData.size > 0) {
+          activeTotal = sizeData.size;
+          localIsEstimated = false;
+          console.log(`Successfully resolved exact size from backend: ${activeTotal} bytes`);
+        }
+      }
+    } catch (sizeErr) {
+      console.warn('Failed to resolve stream size from backend:', sizeErr.message);
+    }
+  }
+
   const isCobalt = streamUrl.includes('/tunnel') || streamUrl.includes('cobalt');
 
   // Case 1: Cobalt stream URL (supports CORS, single-use token, NOT IP-bound)
@@ -143,9 +165,9 @@ async function downloadStreamAsBlob({
       let exactLength = parseInt(response.headers.get('content-length'), 10) || 0;
       let contentLength = exactLength || 
                           parseInt(response.headers.get('estimated-content-length'), 10) || 
-                          totalSize || 0;
-      let activeTotal = contentLength;
-      let localIsEstimated = !exactLength;
+                          activeTotal || 0;
+      activeTotal = contentLength;
+      localIsEstimated = !exactLength;
 
       if (contentLength > 0) {
         setDownloadSize(`${(contentLength / (1024 * 1024)).toFixed(1)} MB`);

@@ -1337,6 +1337,23 @@ app.get('/api/size', async (req, res) => {
     return res.status(400).json({ error: 'URL parameter is required' });
   }
   try {
+    // Optimization: If the URL is our own job file endpoint, return the size directly from disk/job store
+    if (url.includes('/api/file/')) {
+      const parts = url.split('/api/file/');
+      const jobId = parts[parts.length - 1];
+      const job = jobs.get(jobId);
+      if (job) {
+        if (job.filePath && fs.existsSync(job.filePath)) {
+          const stats = fs.statSync(job.filePath);
+          console.log(`[API Size] Local file size found for job ${jobId}: ${stats.size} bytes`);
+          return res.json({ size: stats.size });
+        }
+        if (job.size && !isNaN(parseInt(job.size))) {
+          return res.json({ size: parseInt(job.size) });
+        }
+      }
+    }
+
     const size = await getContentLength(url);
     res.json({ size });
   } catch (err) {
