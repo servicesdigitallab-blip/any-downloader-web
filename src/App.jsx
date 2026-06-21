@@ -306,7 +306,8 @@ async function downloadStreamAsBlob({
           } catch (readErr) {
             clearTimeout(chunkTimeoutId);
             // Toleration logic for connection drop during chunk read
-            if (downloadedBytes > 0 && activeTotal > 0 && downloadedBytes >= activeTotal * 0.9) {
+            const limit = activeTotal || 0;
+            if (downloadedBytes > 0 && (limit > 0 ? downloadedBytes >= limit * 0.9 : downloadedBytes >= 100 * 1024)) {
               console.warn('Stream read failed near the end of chunk, but downloaded >90%. Proceeding with partial stream:', readErr.message);
               done = true;
               break;
@@ -353,8 +354,9 @@ async function downloadStreamAsBlob({
         }
       } catch (chunkErr) {
         console.error(`Chunk request failed at offset ${start}:`, chunkErr.message);
-        if (start > 0) {
-          console.warn("Attempting to save partial video stream...");
+        const limit = activeTotal || 0;
+        if (downloadedBytes > 0 && (limit > 0 ? downloadedBytes >= limit * 0.9 : downloadedBytes >= 100 * 1024)) {
+          console.warn(`Attempting to save partial video stream (${downloadedBytes} bytes)...`);
           hasMore = false;
           break;
         } else {

@@ -1596,6 +1596,29 @@ app.post('/api/download', async (req, res) => {
     // If the process was terminated (e.g., SIGKILL on cancellation), code might be null or non-zero
     if (code !== 0 && job.status !== 'error') {
       console.error(`Job ${jobId} failed or closed with code ${code}. Error: ${stderrData}`);
+      
+      // Salvage partial download if possible
+      try {
+        const files = fs.readdirSync(DOWNLOADS_DIR);
+        const downloadedFile = files.find(f => f.startsWith(jobId));
+        if (downloadedFile) {
+          const fullPath = path.join(DOWNLOADS_DIR, downloadedFile);
+          const stats = fs.statSync(fullPath);
+          if (stats.size > 100 * 1024) {
+            console.warn(`Job ${jobId} exited with code ${code}, but downloaded file exists (${stats.size} bytes). Salvaging partial download!`);
+            const actualExt = path.extname(downloadedFile).substring(1);
+            const nameWithoutExt = job.fileName.substring(0, job.fileName.lastIndexOf('.'));
+            job.fileName = `${nameWithoutExt}.${actualExt}`;
+            job.filePath = fullPath;
+            
+            updateJob({ status: 'completed', progress: 100 });
+            return;
+          }
+        }
+      } catch (e) {
+        console.error('Error attempting to salvage partial download:', e);
+      }
+
       const cleanError = getCleanError(stderrData, 'Download failed. The stream quality may not be available or was restricted.');
       updateJob({ status: 'error', error: cleanError });
       return;
