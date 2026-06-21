@@ -247,7 +247,8 @@ async function fetchFromCobalt(videoUrl, quality) {
         body: JSON.stringify({
           url: videoUrl,
           videoQuality: videoQuality,
-          downloadMode: downloadMode
+          downloadMode: downloadMode,
+          tunnel: true
         }),
         signal: AbortSignal.timeout(10000) // 10.0s timeout per instance
       });

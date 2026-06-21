@@ -119,12 +119,17 @@ async function downloadStreamAsBlob({
   let directFetchSuccess = false;
   const startTime = Date.now();
 
-  const isCobalt = streamUrl.includes('/tunnel') || streamUrl.includes('cobalt');
+  let activeStreamUrl = streamUrl;
+  if (activeStreamUrl.startsWith('http://')) {
+    activeStreamUrl = activeStreamUrl.replace('http://', 'https://');
+  }
+
+  const isCobalt = activeStreamUrl.includes('/tunnel') || activeStreamUrl.includes('cobalt');
 
   // Case 1: Cobalt stream URL (supports CORS, single-use token, NOT IP-bound)
   if (isCobalt) {
     try {
-      console.log('Attempting direct browser fetch for Cobalt stream:', streamUrl);
+      console.log('Attempting direct browser fetch for Cobalt stream:', activeStreamUrl);
       
       const controller = new AbortController();
       let timeoutId = setTimeout(() => {
@@ -132,7 +137,7 @@ async function downloadStreamAsBlob({
         console.warn('Direct fetch connection timed out.');
       }, 15000); // 15 seconds initial connection timeout
 
-      const response = await fetch(streamUrl, { signal: controller.signal });
+      const response = await fetch(activeStreamUrl, { signal: controller.signal });
       clearTimeout(timeoutId);
 
       if (!response.ok) throw new Error(`Direct fetch failed with status ${response.status}`);
@@ -949,7 +954,8 @@ function App() {
           body: JSON.stringify({
             url: videoInfo.originalUrl,
             videoQuality: videoQuality,
-            downloadMode: downloadMode
+            downloadMode: downloadMode,
+            tunnel: true
           }),
           signal: AbortSignal.timeout(10000)
         });
