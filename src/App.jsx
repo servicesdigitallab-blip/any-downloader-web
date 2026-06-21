@@ -972,7 +972,7 @@ function App() {
 
     let success = false;
 
-    const targetInstances = instances.slice(0, 8);
+    const targetInstances = instances.slice(0, 16);
     try {
       const promises = targetInstances.map(async (instance) => {
         const res = await fetch(instance, {
@@ -984,25 +984,42 @@ function App() {
           body: JSON.stringify({
             url: videoInfo.originalUrl,
             videoQuality: videoQuality,
-            downloadMode: downloadMode,
-            tunnel: true
+            downloadMode: downloadMode
           }),
           signal: AbortSignal.timeout(10000)
         });
 
         if (!res.ok) throw new Error('Not ok');
         const data = await res.json();
+        let resolvedUrl = '';
+        let resolvedFilename = '';
+
         if (data && (data.status === 'redirect' || data.status === 'tunnel' || data.url)) {
-          return {
-            url: data.url,
-            filename: data.filename || `download.${selectedQuality === 'audio' ? 'mp3' : 'mp4'}`,
-            instance
-          };
+          resolvedUrl = data.url;
+          resolvedFilename = data.filename || `download.${selectedQuality === 'audio' ? 'mp3' : 'mp4'}`;
         } else if (data && data.status === 'picker' && data.picker && data.picker.length > 0) {
           const item = data.picker.find(p => p.type === 'video') || data.picker[0];
+          resolvedUrl = item.url;
+          resolvedFilename = data.filename || `download.${selectedQuality === 'audio' ? 'mp3' : 'mp4'}`;
+        }
+
+        if (resolvedUrl) {
+          // Pre-fetch check via chunk proxy to bypass browser CORS block and ensure stream is not empty
+          console.log(`[Frontend Precheck] Verifying resolved URL from ${instance} via proxy: ${resolvedUrl}`);
+          const checkUrl = `${API_BASE}/api/chunk?url=${encodeURIComponent(resolvedUrl)}&start=0&end=99`;
+          const streamCheck = await fetch(checkUrl, { signal: AbortSignal.timeout(4000) });
+          if (!streamCheck.ok) {
+            throw new Error(`Proxy pre-check failed with status ${streamCheck.status}`);
+          }
+          const checkBuf = await streamCheck.arrayBuffer();
+          if (checkBuf.byteLength === 0) {
+            throw new Error('Proxy pre-check returned empty stream (0 bytes), likely blocked by YouTube.');
+          }
+          console.log(`[Frontend Precheck] Successfully verified stream from ${instance}!`);
+
           return {
-            url: item.url,
-            filename: data.filename || `download.${selectedQuality === 'audio' ? 'mp3' : 'mp4'}`,
+            url: resolvedUrl,
+            filename: resolvedFilename,
             instance
           };
         }

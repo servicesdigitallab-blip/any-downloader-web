@@ -232,8 +232,8 @@ async function fetchFromCobalt(videoUrl, quality) {
   }
 
   const instances = await getCobaltInstances();
-  // Try up to 8 instances in parallel to prevent sequential timeout stacking
-  const targetInstances = instances.slice(0, 8);
+  // Try up to 16 instances in parallel to prevent sequential timeout stacking
+  const targetInstances = instances.slice(0, 16);
   console.log(`Querying ${targetInstances.length} Cobalt instances in parallel in backend...`);
 
   const promises = targetInstances.map(async (instance) => {
@@ -248,48 +248,118 @@ async function fetchFromCobalt(videoUrl, quality) {
         body: JSON.stringify({
           url: videoUrl,
           videoQuality: videoQuality,
-          downloadMode: downloadMode,
-          tunnel: true
+          downloadMode: downloadMode
         }),
         signal: AbortSignal.timeout(10000) // 10.0s timeout per instance
       });
 
-      if (response.ok) {
-        const data = await response.json();
-        if (data && (data.status === 'redirect' || data.status === 'tunnel' || data.url)) {
-          return {
-            url: data.url,
-            filename: data.filename || `download.${quality === 'audio' ? 'mp3' : 'mp4'}`,
-            instance
-          };
-        } else if (data && data.status === 'picker' && data.picker && data.picker.length > 0) {
-          const item = data.picker.find(p => p.type === 'video') || data.picker[0];
-          return {
-            url: item.url,
-            filename: data.filename || `download.${quality === 'audio' ? 'mp3' : 'mp4'}`,
-            instance
-          };
-        }
-      } else {
+      if (!response.ok) {
         const errData = await response.json().catch(() => ({}));
         throw new Error(`Instance ${instance} returned status ${response.status}: ${JSON.stringify(errData)}`);
       }
+
+      const data = await response.json();
+      let resolvedUrl = '';
+      let resolvedFilename = '';
+      
+      if (data && (data.status === 'redirect' || data.status === 'tunnel' || data.url)) {
+        resolvedUrl = data.url;
+        resolvedFilename = data.filename || `download.${quality === 'audio' ? 'mp3' : 'mp4'}`;
+      } else if (data && data.status === 'picker' && data.picker && data.picker.length > 0) {
+        const item = data.picker.find(p => p.type === 'video') || data.picker[0];
+        resolvedUrl = item.url;
+        resolvedFilename = data.filename || `download.${quality === 'audio' ? 'mp3' : 'mp4'}`;
+      }
+
+      if (!resolvedUrl) {
+        throw new Error(`Instance ${instance} did not resolve a download URL.`);
+      }
+
+      // Pre-check stream
+      let precheckOk = false;
+      let precheckError = '';
+      try {
+        console.log(`[Backend Precheck] Verifying resolved URL from ${instance}: ${resolvedUrl}`);
+        const checkRes = await fetch(resolvedUrl, {
+          headers: {
+            'Range': 'bytes=0-99',
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36'
+          },
+          signal: AbortSignal.timeout(3500)
+        });
+        
+        if (!checkRes.ok) {
+          throw new Error(`Stream returned HTTP error status ${checkRes.status}`);
+        }
+        if (checkRes.headers.get('content-length') === '0') {
+          throw new Error('Stream returned empty (0 bytes) response, likely blocked by YouTube.');
+        }
+        
+        const reader = checkRes.body?.getReader();
+        if (reader) {
+          const { done, value } = await reader.read();
+          await reader.cancel().catch(() => {});
+          if (done || !value || value.length === 0) {
+            throw new Error('Stream body is empty, likely blocked by YouTube.');
+          }
+        }
+        precheckOk = true;
+        console.log(`[Backend Precheck] Successfully verified stream bytes from ${instance}!`);
+      } catch (checkErr) {
+        precheckError = checkErr.message;
+        console.warn(`[Backend Precheck Failed] ${instance}: ${precheckError}`);
+      }
+
+      return {
+        url: resolvedUrl,
+        filename: resolvedFilename,
+        instance,
+        precheckOk,
+        precheckError
+      };
     } catch (err) {
       throw err;
     }
   });
 
-  try {
-    const result = await Promise.any(promises);
-    console.log(`Backend parallel Cobalt fetch succeeded with: ${result.instance}`);
+  const settleResults = await Promise.allSettled(promises);
+  
+  // 1. Check if we have any candidate that passed the precheck
+  const verifiedCandidate = settleResults.find(
+    r => r.status === 'fulfilled' && r.value && r.value.precheckOk
+  );
+  if (verifiedCandidate) {
+    console.log(`Backend parallel Cobalt fetch succeeded with verified instance: ${verifiedCandidate.value.instance}`);
     return {
-      url: result.url,
-      filename: result.filename
+      url: verifiedCandidate.value.url,
+      filename: verifiedCandidate.value.filename
     };
-  } catch (err) {
-    console.error('All parallel Cobalt instances failed in backend:', err.message);
-    throw new Error('All community Cobalt instances failed to process this video.');
   }
+
+  // 2. Fallback: Check if we have any successfully resolved URL (even if precheck failed)
+  const fallbackCandidate = settleResults.find(
+    r => r.status === 'fulfilled' && r.value && r.value.url
+  );
+  if (fallbackCandidate) {
+    console.warn(`Backend parallel Cobalt fetch did not find a verified stream, falling back to unverified instance: ${fallbackCandidate.value.instance}`);
+    return {
+      url: fallbackCandidate.value.url,
+      filename: fallbackCandidate.value.filename
+    };
+  }
+
+  // 3. If everything failed, log details and throw
+  console.error('All parallel Cobalt instances failed in backend.');
+  settleResults.forEach((r, idx) => {
+    const instName = targetInstances[idx];
+    if (r.status === 'rejected') {
+      console.error(`  > Instance [${instName}] failed POST resolution:`, r.reason?.message || r.reason);
+    } else {
+      console.error(`  > Instance [${instName}] resolved URL but precheck failed: ${r.value.precheckError}`);
+    }
+  });
+
+  throw new Error('All community Cobalt instances failed to process this video.');
 }
 
 // Helper: Get content length of a URL (supporting HEAD and GET with Range fallback)
