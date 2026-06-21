@@ -1313,103 +1313,24 @@ app.post('/api/download', async (req, res) => {
     const isYouTube = url.includes('youtube.com') || url.includes('youtu.be');
     if (isYouTube) {
       try {
-        console.log(`Getting direct download link for YouTube via youtubei.js: ${url}`);
-        const videoId = getYouTubeID(url);
-        if (!videoId) {
-          throw new Error('Could not parse YouTube video ID.');
-        }
+        console.log(`Resolving YouTube download on Vercel via Cobalt API...`);
+        const cobaltResult = await fetchFromCobalt(url, quality);
         
-        const yt = await getYoutubeClient();
-        
-        let videoInfo = null;
-        let lastErr = null;
-        const clientsToTry = ['ANDROID', 'TV', 'MWEB', 'WEB'];
-        
-        for (const clientName of clientsToTry) {
-          try {
-            console.log(`Trying youtubei.js download client: ${clientName}`);
-            const tempInfo = await yt.getInfo(videoId, { client: clientName });
-            if (tempInfo && tempInfo.streaming_data && tempInfo.basic_info && tempInfo.basic_info.title) {
-              videoInfo = tempInfo;
-              console.log(`Successfully fetched videoInfo for download using client: ${clientName}`);
-              break;
-            }
-          } catch (e) {
-            console.warn(`youtubei.js download client ${clientName} failed:`, e.message);
-            lastErr = e;
-          }
-        }
-        
-        if (!videoInfo) {
-          throw lastErr || new Error('Failed to resolve download info with all clients.');
-        }
-        
-        let formatOpts = {};
-        if (quality === 'audio') {
-          formatOpts = { quality: 'best', type: 'audio' };
-        } else {
-          // Map quality requests
-          formatOpts = {
-            quality: (quality === '360p' || quality === '480p') ? '360p' : (quality === '720p' ? '720p' : 'best'),
-            type: 'video+audio'
-          };
-        }
-        
-        console.log('Choosing format with options:', formatOpts);
-        const format = videoInfo.chooseFormat(formatOpts);
-        if (!format) {
-          throw new Error('No compatible YouTube stream format found.');
-        }
-
-        const player = yt.session?.player;
-        if (!player) {
-          throw new Error('Innertube player session not found.');
-        }
-        
-        const decipheredUrl = await format.decipher(player);
-        if (!decipheredUrl) {
-          throw new Error('Deciphering YouTube stream URL returned empty.');
-        }
-
-        // Get format file size
-        let contentLength = parseInt(format.content_length) || 0;
-        if (!contentLength) {
-          const headRes = await fetch(decipheredUrl, { method: 'HEAD' });
-          contentLength = parseInt(headRes.headers.get('content-length')) || 0;
-        }
-
         const fileExt = quality === 'audio' ? 'mp3' : 'mp4';
         const fileName = `[Any Downloader] - ${title.replace(/[\\/:*?"<>|]/g, '_')}.${fileExt}`;
 
         return res.json({
-          streamUrl: decipheredUrl,
-          totalSize: contentLength,
+          streamUrl: cobaltResult.url,
           fileName
         });
-      } catch (err) {
-        console.warn('youtubei.js download resolution failed on Vercel, trying @distube/ytdl-core fallback:', err.message);
+      } catch (cobaltErr) {
+        console.warn('Cobalt download failed for YouTube on Vercel, trying Invidious fallback:', cobaltErr.message);
         try {
-          const data = await ytdl.getInfo(url);
-          
-          let ytdlQuality = 'highest';
-          if (quality === '360p' || quality === '480p') {
-            ytdlQuality = '18'; // 360p
-          } else if (quality === 'audio') {
-            ytdlQuality = 'highestaudio';
-          }
-          
-          const formats = data.formats || [];
-          const filterStr = quality === 'audio' ? 'audioonly' : 'videoandaudio';
-          const format = ytdl.chooseFormat(formats, { quality: ytdlQuality, filter: filterStr });
-          
+          const videoId = getYouTubeID(url);
+          const invidiousData = await fetchInvidiousVideoInfo(videoId);
+          const format = getInvidiousFormat(invidiousData, quality);
           if (!format || !format.url) {
-            throw new Error('No compatible YouTube stream format found with audio and video.');
-          }
-
-          let contentLength = parseInt(format.contentLength);
-          if (!contentLength || isNaN(contentLength)) {
-            const headRes = await fetch(format.url, { method: 'HEAD' });
-            contentLength = parseInt(headRes.headers.get('content-length')) || 0;
+            throw new Error('No compatible YouTube download stream found on Invidious.');
           }
 
           const fileExt = quality === 'audio' ? 'mp3' : 'mp4';
@@ -1417,44 +1338,12 @@ app.post('/api/download', async (req, res) => {
 
           return res.json({
             streamUrl: format.url,
-            totalSize: contentLength,
+            totalSize: format.size || 15 * 1024 * 1024,
             fileName
           });
-        } catch (ytdlErr) {
-          console.warn('ytdl-core download resolution failed on Vercel, trying Cobalt API fallback:', ytdlErr.message);
-          try {
-            const cobaltResult = await fetchFromCobalt(url, quality);
-            
-            const fileExt = quality === 'audio' ? 'mp3' : 'mp4';
-            const fileName = `[Any Downloader] - ${title.replace(/[\\/:*?"<>|]/g, '_')}.${fileExt}`;
-
-            return res.json({
-              streamUrl: cobaltResult.url,
-              fileName
-            });
-          } catch (cobaltErr) {
-            console.warn('Cobalt download fallback failed, trying Invidious fallback:', cobaltErr.message);
-            try {
-              const videoId = getYouTubeID(url);
-              const invidiousData = await fetchInvidiousVideoInfo(videoId);
-              const format = getInvidiousFormat(invidiousData, quality);
-              if (!format || !format.url) {
-                throw new Error('No compatible YouTube download stream found on Invidious.');
-              }
-
-              const fileExt = quality === 'audio' ? 'mp3' : 'mp4';
-              const fileName = `[Any Downloader] - ${title.replace(/[\\/:*?"<>|]/g, '_')}.${fileExt}`;
-
-              return res.json({
-                streamUrl: format.url,
-                totalSize: format.size || 15 * 1024 * 1024,
-                fileName
-              });
-            } catch (invErr) {
-              console.error('All direct streaming info methods failed on Vercel:', invErr.message);
-              return res.status(500).json({ error: `Vercel download failed: All methods (including Cobalt & Invidious fallbacks) failed.` });
-            }
-          }
+        } catch (invErr) {
+          console.error('All methods failed on Vercel for YouTube:', invErr.message);
+          return res.status(500).json({ error: `Vercel YouTube download failed: All methods (including Cobalt & Invidious fallbacks) failed.` });
         }
       }
     } else {
