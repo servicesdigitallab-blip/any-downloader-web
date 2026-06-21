@@ -809,24 +809,39 @@ function App() {
           }
 
           if (resolvedUrl) {
-            // Pre-fetch check via chunk proxy to bypass browser CORS block and ensure stream is not empty
-            console.log(`[Frontend Precheck] Verifying resolved URL from ${instance} via proxy: ${resolvedUrl}`);
-            const checkUrl = `${API_BASE}/api/chunk?url=${encodeURIComponent(resolvedUrl)}&start=0&end=99`;
-            const streamCheck = await fetch(checkUrl, { signal: AbortSignal.timeout(4000) });
-            if (!streamCheck.ok) {
-              throw new Error(`Proxy pre-check failed with status ${streamCheck.status}`);
+            let precheckOk = false;
+            try {
+              // Pre-fetch check via chunk proxy to bypass browser CORS block and ensure stream is not empty
+              console.log(`[Frontend Precheck] Verifying resolved URL from ${instance} via proxy: ${resolvedUrl}`);
+              const checkUrl = `${API_BASE}/api/chunk?url=${encodeURIComponent(resolvedUrl)}&start=0&end=99`;
+              const streamCheck = await fetch(checkUrl, { signal: AbortSignal.timeout(4000) });
+              if (!streamCheck.ok) {
+                throw new Error(`Proxy pre-check failed with status ${streamCheck.status}`);
+              }
+              const checkBuf = await streamCheck.arrayBuffer();
+              if (checkBuf.byteLength === 0) {
+                throw new Error('Proxy pre-check returned empty stream (0 bytes), likely blocked by YouTube.');
+              }
+              precheckOk = true;
+              console.log(`[Frontend Precheck] Successfully verified stream from ${instance}!`);
+            } catch (checkErr) {
+              const isTimeout = checkErr.name === 'TimeoutError' || checkErr.message.toLowerCase().includes('abort') || checkErr.message.toLowerCase().includes('timeout');
+              if (isTimeout) {
+                precheckOk = true;
+                console.log(`[Frontend Precheck Timeout] ${instance}: Slow stream, assuming on-the-fly muxing. Marking as OK.`);
+              } else {
+                console.warn(`[Frontend Precheck Failed] ${instance}: ${checkErr.message}`);
+              }
             }
-            const checkBuf = await streamCheck.arrayBuffer();
-            if (checkBuf.byteLength === 0) {
-              throw new Error('Proxy pre-check returned empty stream (0 bytes), likely blocked by YouTube.');
-            }
-            console.log(`[Frontend Precheck] Successfully verified stream from ${instance}!`);
 
-            return {
-              url: resolvedUrl,
-              filename: resolvedFilename,
-              instance
-            };
+            if (precheckOk) {
+              return {
+                url: resolvedUrl,
+                filename: resolvedFilename,
+                instance
+              };
+            }
+            throw new Error('Precheck failed');
           }
           throw new Error('Invalid format');
         });

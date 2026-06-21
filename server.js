@@ -307,7 +307,13 @@ async function fetchFromCobalt(videoUrl, quality) {
         console.log(`[Backend Precheck] Successfully verified stream bytes from ${instance}!`);
       } catch (checkErr) {
         precheckError = checkErr.message;
-        console.warn(`[Backend Precheck Failed] ${instance}: ${precheckError}`);
+        const isTimeout = checkErr.name === 'TimeoutError' || checkErr.message.toLowerCase().includes('abort') || checkErr.message.toLowerCase().includes('timeout');
+        if (isTimeout) {
+          precheckOk = true;
+          console.log(`[Backend Precheck Timeout] ${instance}: Stream is slow to respond, assuming on-the-fly muxing. Marking as OK.`);
+        } else {
+          console.warn(`[Backend Precheck Failed] ${instance}: ${precheckError}`);
+        }
       }
 
       return {
